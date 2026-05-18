@@ -1,13 +1,20 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { C } from './constants.js'
 
 export default function TitleBar({ title, subtitle }) {
   const isMac = navigator.userAgent.includes('Mac')
+  const [isPinned, setIsPinned] = useState(false)
 
   // Funções para controlar a janela
   const handleMinimize = () => window.electron.minimize()
   const handleMaximize = () => window.electron.maximize()
   const handleClose = () => window.electron.close()
+  
+  const handleTogglePin = () => {
+    const nextState = !isPinned
+    setIsPinned(nextState)
+    window.electron.toggleAlwaysOnTop(nextState)
+  }
 
   return (
     <div style={{
@@ -19,7 +26,7 @@ export default function TitleBar({ title, subtitle }) {
       paddingInline: isMac ? '80px 16px' : '16px',
       gap: 12,
       flexShrink: 0,
-      WebkitAppRegion: 'drag', // Permite arrastar a janela por aqui
+      WebkitAppRegion: 'drag', 
       userSelect: 'none',
     }}>
       <div style={{ fontSize: 16, WebkitAppRegion: 'no-drag' }}>🎮</div>
@@ -40,8 +47,15 @@ export default function TitleBar({ title, subtitle }) {
           marginLeft: 'auto',
           display: 'flex',
           height: '100%',
-          WebkitAppRegion: 'no-drag', // IMPORTANTE: desativa o drag para os botões funcionarem
+          WebkitAppRegion: 'no-drag', 
         }}>
+          {/* Botão de Fixar / Sempre no topo */}
+          <ControlButton 
+            label="📌" 
+            onClick={handleTogglePin} 
+            isActive={isPinned} 
+            title={isPinned ? "Desafixar do topo" : "Fixar no topo da tela"}
+          />
           <ControlButton label="─" onClick={handleMinimize} />
           <ControlButton label="□" onClick={handleMaximize} />
           <ControlButton label="✕" onClick={handleClose} isClose />
@@ -51,17 +65,17 @@ export default function TitleBar({ title, subtitle }) {
   )
 }
 
-// Sub-componente para os botões de controle
-function ControlButton({ label, onClick, isClose }) {
+function ControlButton({ label, onClick, isClose, isActive, title }) {
   return (
     <button 
       onClick={onClick}
+      title={title}
       style={{
         width: 46,
         height: 44,
-        background: 'none',
+        background: isActive ? C.borderHover : 'none',
         border: 'none',
-        color: C.textDim,
+        color: isActive ? C.text : C.textDim,
         fontSize: 14,
         cursor: 'pointer',
         display: 'flex',
@@ -74,8 +88,8 @@ function ControlButton({ label, onClick, isClose }) {
         e.currentTarget.style.color = isClose ? '#FFF' : C.text
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.background = 'none'
-        e.currentTarget.style.color = C.textDim
+        e.currentTarget.style.background = isActive ? C.borderHover : 'none'
+        e.currentTarget.style.color = isActive ? C.text : C.textDim
       }}
     >
       {label}
