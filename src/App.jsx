@@ -8,6 +8,8 @@ import {
   SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, INFERENCE_PARAMS
 } from './constants'
 import { soundManager } from './soundManager'
+import VisualWorkspace from './VisualWorkspace'
+import { buildRelationships } from './relationshipAnalyzer'
 
 const TextRenderer = ({ text }) => {
   const html = text
@@ -125,6 +127,7 @@ export default function App() {
 
   const [projectPath, setProjectPath] = useState(null)
   const [files, setFiles] = useState({})
+  const [relationships, setRelationships] = useState({ links: [], weights: {} })
 
   const [showArtifactModal, setShowArtifactModal]   = useState(false)
   const [artifactScanResult, setArtifactScanResult] = useState(null) 
@@ -143,6 +146,12 @@ export default function App() {
   })
   const [isModelLoaded, setIsModelLoaded] = useState(false)
   const [chatPanelWidth, setChatPanelWidth] = useState(420) // 420 | 650 | 260
+
+  // ── Painel esquerdo retrátil ──
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
+
+  // ── Modo do workspace: 'code' | 'visual' ──
+  const [workspaceMode, setWorkspaceMode] = useState('code')
 
   const [inputText, setInputText] = useState("")
   const [isProcessing, setIsProcessing] = useState(false)
@@ -246,6 +255,38 @@ export default function App() {
     }
   }, [chatHistory, streamingText, isProcessing])
 
+  // Listener do Watcher (Monitoramento ao Vivo do GameMaker)
+  useEffect(() => {
+    const handleFileChange = (data) => {
+      // 1. Atualiza a lista de arquivos lateral
+      setFiles(prev => {
+        const newFiles = { ...prev }
+        if (data.type === 'delete') {
+          delete newFiles[data.path]
+        } else {
+          newFiles[data.path] = data.content
+        }
+        return newFiles
+      })
+
+      // 2. Se o usuário estiver com o arquivo aberto na tab, atualiza lá também
+      setWorkspaceTabs(prevTabs => prevTabs.map(tab => {
+        if (tab.type === 'file' && tab.path === data.path) {
+          if (data.type === 'delete') {
+            return { ...tab, content: '// Arquivo foi excluído fora do assistente.' }
+          }
+          return { ...tab, content: data.content }
+        }
+        return tab
+      }))
+    }
+
+    window.electron?.on('file-changed', handleFileChange)
+    return () => {
+      window.electron?.off('file-changed', handleFileChange)
+    }
+  }, [])
+
   const handleSetupComplete = async (mode, onlineConfig) => {
     const newSettings = { ...appSettings, aiMode: mode, ...onlineConfig }
     await window.electron.saveSettings(newSettings)
@@ -314,9 +355,16 @@ export default function App() {
       setProjectPath(folderPath)
       const loadedFiles = await window.electron.readProjectFolder(folderPath)
       setFiles(loadedFiles)
+
+      // ATUALIZADO:
+      const relData = buildRelationships(loadedFiles)
+      setRelationships(relData)
+
       setWorkspaceTabs([])
       setArtifactScanResult(null)
       setShowArtifactModal(true)
+
+      window.electron.watchProject(folderPath)
     }
   }
 
@@ -385,7 +433,7 @@ export default function App() {
         id: `diff_${Date.now()}_${Math.random()}`, type: 'diff',
         path: ch.path,
         oldCode: files[ch.path] || "",
-        newCode: ch.code,
+        newCode: ch.newCode,
         analysisText: fullAnalysis,
         searchFailed: ch.searchFailed,
         suggestedBlock: ch.suggestedBlock,
@@ -435,14 +483,16 @@ export default function App() {
         if (response.ok) {
           const remainingTabs = workspaceTabs.filter(t => t.id !== tab.id && t.path !== tab.path)
           const nextDiff = remainingTabs.find(t => t.type === 'diff')
-          const nextId = nextDiff
-            ? nextDiff.id
-            : (remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1].id : null)
+          const nextId = nextDiff ? nextDiff.id : (remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1].id : null)
 
           setFiles(prev => { const n = { ...prev }; delete n[tab.path]; return n })
           setWorkspaceTabs(remainingTabs)
           setActiveTabId(nextId)
-          setChatHistory(prev => [...prev, { role: 'system_msg', content: `🗑️ Arquivo excluído pela IA: ${tab.path.split(/[\/\\]/).pop()}` }])
+          
+          setChatHistory(prev => [...prev, { 
+            role: 'system_msg', 
+            content: `🗑️ Arquivo apagado do disco: ${tab.path.split(/[\/\\]/).pop()}\n\n⚠️ Vá no GameMaker e exclua o item que ficou com o triângulo amarelo para limpar o projeto.` 
+          }])
         } else {
           setChatHistory(prev => [...prev, { role: 'error', content: `Erro ao excluir: ${response.error}` }])
         }
@@ -465,15 +515,44 @@ export default function App() {
         const remainingDiff = workspaceTabs.find(t => t.type === 'diff' && t.id !== tab.id)
 
         setFiles(prev => ({ ...prev, [tab.path]: tab.newCode }))
-        setWorkspaceTabs(prev =>
-          prev.map(t =>
-            t.id === tab.id
-              ? { id: newId, type: 'file', path: tab.path, content: tab.newCode }
-              : t
+
+        // [BUG FIX] No modo visual, remove a tab diff completamente em vez de
+        // converter para file — o node do VisualWorkspace já exibe o conteúdo.
+        // No modo código, converte para file normalmente para manter a aba aberta.
+        if (workspaceMode === 'visual') {
+          setWorkspaceTabs(prev => prev.filter(t => t.id !== tab.id))
+          setActiveTabId(remainingDiff ? remainingDiff.id : null)
+        } else {
+          setWorkspaceTabs(prev =>
+            prev.map(t =>
+              t.id === tab.id
+                ? { id: newId, type: 'file', path: tab.path, content: tab.newCode }
+                : t
+            )
           )
-        )
-        setActiveTabId(remainingDiff ? remainingDiff.id : newId)
-        setChatHistory(prev => [...prev, { role: 'system_msg', content: `✅ Arquivo salvo: ${tab.path.split(/[\/\\]/).pop()}` }])
+          setActiveTabId(remainingDiff ? remainingDiff.id : newId)
+        }
+        
+        if (response.isNew) {
+          if (response.autoRegistered) {
+            // [BUG FIX] Asset registrado automaticamente no .yyp → GameMaker detecta sozinho
+            setChatHistory(prev => [...prev, { 
+              role: 'system_msg', 
+              content: `✨ Asset criado e registrado no projeto!\n\nO GameMaker Studio deve detectar o novo item automaticamente.\n⚠️ Se não aparecer, salve o projeto no GameMaker (Ctrl+S) para forçar a atualização.` 
+            }])
+          } else {
+            // Fallback: tipo de asset não suportado para auto-registro (ex: rooms, sequences)
+            setChatHistory(prev => [...prev, { 
+              role: 'system_msg', 
+              content: `✨ Arquivo Gerado!\nUma janela de pasta foi aberta.\n\n👉 Arraste o arquivo selecionado para dentro do GameMaker para importá-lo.` 
+            }])
+          }
+        } else {
+          setChatHistory(prev => [...prev, { 
+            role: 'system_msg', 
+            content: `✅ Arquivo modificado com sucesso: ${tab.path.split(/[\/\\]/).pop()}` 
+          }])
+        }
       } else {
         setChatHistory(prev => [...prev, { role: 'error', content: `Erro ao salvar: ${response.error}` }])
       }
@@ -485,7 +564,7 @@ export default function App() {
   const handleDeleteFile = async (e, pathToDelete) => {
     e.stopPropagation()
     
-    const confirm = window.confirm(`Tem certeza absoluta que deseja excluir o arquivo:\n${pathToDelete}\n\nIsso irá apagá-lo do GameMaker também. Esta ação não pode ser desfeita.`)
+    const confirm = window.confirm(`Tem certeza absoluta que deseja' excluir o arquivo:\n${pathToDelete}\n\nIsso irá apagá-lo do GameMaker também. Esta ação não pode ser desfeita.`)
     if (!confirm) return
 
     const response = await window.electron.deleteFile({ folderPath: projectPath, relativePath: pathToDelete })
@@ -511,136 +590,220 @@ export default function App() {
     }
   }
 
+  // ── NOVA FUNÇÃO ROBUST REPLACE (Mais Segura) ──
   const robustReplace = (originalCode, searchBlock, replaceBlock) => {
-    const norm = s => s
-      .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-      .replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD\u2028\u2029]/g, '') 
-      .replace(/[\u00A0\u202F\u2008\u2007\u2006\u2005\u2004\u2003\u2002\u2001\u3000]/g, ' ') 
-
-    const isSig = l => l.trim().length > 0 && !/^\s*\/\//.test(l)
-    const trim  = l => l.trim().replace(/\s+/g, ' ')
-
-    const nOrig    = norm(originalCode)
-    const nSearch  = norm(searchBlock)
-    const nReplace = norm(replaceBlock)
-
-    if (originalCode.includes(searchBlock))
-      return originalCode.replace(searchBlock, replaceBlock)
-
-    if (nOrig.includes(nSearch))
-      return nOrig.replace(nSearch, nReplace)
-
-    const te       = s => s.split('\n').map(l => l.trimEnd()).join('\n')
-    const teOrig   = te(nOrig)
-    const teSearch = te(nSearch)
-    if (teOrig.includes(teSearch)) {
-      const i = teOrig.indexOf(teSearch)
-      return nOrig.slice(0, i) + nReplace + nOrig.slice(i + teSearch.length)
+    // 1. Tentativa exata (mais rápida e precisa)
+    if (originalCode.includes(searchBlock)) {
+      return originalCode.replace(searchBlock, replaceBlock);
     }
 
-    const origLines = nOrig.split('\n')
-    const searchSig = nSearch.split('\n').filter(isSig).map(trim)
-    if (searchSig.length === 0) return null
+    // 2. Normalização de quebras de linha
+    const normOrig   = originalCode.replace(/\r\n/g, '\n')
+    const normSearch = searchBlock.replace(/\r\n/g, '\n')
+    if (normOrig.includes(normSearch)) {
+      return normOrig.replace(normSearch, replaceBlock);
+    }
 
-    const THRESHOLD  = 0.60
-    const MAX_EXPAND = Math.max(3, Math.ceil(searchSig.length * 0.5))
+    // 3. Tokenizador Avançado: Ignora espaços e comentários GML, preservando strings!
+    const tokenize = (code) => {
+      const tokens = []
+      let inString = false, stringChar = ''
+      let inLineComment = false, inBlockComment = false
 
-    let best = null
+      for (let i = 0; i < code.length; i++) {
+        const c = code[i], next = code[i + 1] || ''
 
-    for (let start = 0; start < origLines.length; start++) {
-      const maxEnd = Math.min(origLines.length, start + searchSig.length + MAX_EXPAND)
-      for (let end = start + searchSig.length; end <= maxEnd; end++) {
-        const windowSig = origLines.slice(start, end).filter(isSig).map(trim)
-        if (windowSig.length < searchSig.length) continue
-
-        let si = 0
-        for (const wl of windowSig) {
-          if (si < searchSig.length && wl === searchSig[si]) si++
+        // Pula comentários em bloco /* ... */
+        if (inBlockComment) {
+          if (c === '*' && next === '/') { inBlockComment = false; i++; }
+          continue;
         }
-        const score = si / searchSig.length
-
-        if (score >= THRESHOLD) {
-          const size = end - start
-          if (!best || score > best.score || (score === best.score && size < best.size)) {
-            best = { start, end, score, size }
+        // Pula comentários de linha // ...
+        if (inLineComment) {
+          if (c === '\n' || c === '\r') inLineComment = false;
+          continue;
+        }
+        // Identifica abertura de strings (protege URLs como http://)
+        if (!inString && (c === '"' || c === "'")) {
+          inString = true; stringChar = c;
+          tokens.push({ char: c, idx: i });
+          continue;
+        }
+        // Dentro de strings
+        if (inString) {
+          tokens.push({ char: c, idx: i });
+          if (c === '\\') { // Caractere de escape \"
+            tokens.push({ char: next, idx: i+1 });
+            i++;
+          } else if (c === stringChar) {
+            inString = false;
           }
+          continue;
         }
+        // Identifica início de comentários
+        if (c === '/' && next === '/') { inLineComment = true; i++; continue; }
+        if (c === '/' && next === '*') { inBlockComment = true; i++; continue; }
+
+        // Ignora espaços e quebras de linha
+        if (/\s/.test(c)) continue;
+
+        tokens.push({ char: c, idx: i })
       }
+      return tokens
     }
 
-    if (best) {
-      const before = origLines.slice(0, best.start).join('\n')
-      const after  = origLines.slice(best.end).join('\n')
-      return [before, nReplace, after].filter(s => s.length > 0).join('\n')
-    }
+    const origTokens   = tokenize(originalCode)
+    const searchTokens = tokenize(searchBlock)
 
-    return null
+    if (searchTokens.length === 0) return null
+
+    const origChars   = origTokens.map(t => t.char).join('')
+    const searchChars = searchTokens.map(t => t.char).join('')
+
+    const matchIdx = origChars.indexOf(searchChars)
+    if (matchIdx === -1) return null // Falhou de vez
+
+    // Mapeia de volta para as posições originais exatas
+    const realStart = origTokens[matchIdx].idx
+    const realEnd   = origTokens[matchIdx + searchTokens.length - 1].idx
+
+    const before = originalCode.substring(0, realStart)
+    const after  = originalCode.substring(realEnd + 1)
+
+    return before + replaceBlock + after
   }
 
+  // ── NOVO PARSE DA RESPOSTA (Resolve Tags Vazias e Markdown Intruso) ──
   const parseAIResponse = (rawText, currentFiles) => {
-    let analysis = rawText
-    let changes  = []
-    let firstTagIndex = rawText.length
+    let analysis = rawText;
+    let firstTagIndex = rawText.length;
 
-    const copyRegex = /<copy\s+from=["']([^"']+)["']\s+to=["']([^"']+)["']\s*\/?>/gi
-    let copyMatch
+    const fileStates = { ...currentFiles };
+    const finalChangesMap = new Map();
+
+    const normalizePath = (p) => p.replace(/\\/g, '/');
+
+    // Helper para limpar marcações Markdown de dentro do XML
+    const cleanCodeBlock = (text) => {
+      if (!text) return "";
+      return text
+        .replace(/^\s*```[a-zA-Z]*\s*\n?/i, '') // Remove inicio ```gml ou ```json
+        .replace(/\n?\s*```\s*$/i, '')          // Remove final ```
+        .replace(/^\n+|\n+$/g, '');             // Remove quebras de linha em excesso nas pontas
+    };
+
+    const getChangeEntry = (path) => {
+      const normPath = normalizePath(path);
+      if (!finalChangesMap.has(normPath)) {
+        finalChangesMap.set(normPath, {
+          path: normPath,
+          oldCode: currentFiles[normPath] || "",
+          newCode: currentFiles[normPath] || "",
+          isDelete: false,
+          isNew: false,
+          isCopy: false,
+          searchFailed: false,
+          searchedBlock: "",
+          suggestedBlock: ""
+        });
+      }
+      return finalChangesMap.get(normPath);
+    }
+
+    // 1. COPY (O loop que estava faltando!)
+    const copyRegex = /<copy\s+from=["']([^"']+)["']\s+to=["']([^"']+)["']\s*\/?>/gi;
+    let copyMatch;
     while ((copyMatch = copyRegex.exec(rawText)) !== null) {
-      if (copyMatch.index < firstTagIndex) firstTagIndex = copyMatch.index
-      const fromPath = copyMatch[1]
-      const toPath = copyMatch[2]
-      const code = currentFiles[fromPath] !== undefined ? currentFiles[fromPath] : "// [ERRO] O arquivo de origem não foi encontrado no contexto."
-      changes.push({ path: toPath, code, isCopy: true, fromPath })
+      if (copyMatch.index < firstTagIndex) firstTagIndex = copyMatch.index;
+      
+      const fromPath = normalizePath(copyMatch[1]);
+      const toPath = normalizePath(copyMatch[2]);
+      
+      const entry = getChangeEntry(toPath);
+      entry.isCopy = true;
+      entry.fromPath = fromPath;
+      entry.newCode = currentFiles[fromPath] || "// Código original não encontrado. Verifique o arquivo no Workspace.";
+      fileStates[toPath] = entry.newCode;
     }
-
-    const fileRegex = /<file\s+path=["']([^"']+)["']>([\s\S]*?)(?:<\/file>|$)/gi
-    let fileMatch
+    
+    // 2. FILE
+    const fileRegex = /<file\s+path=["']([^"']+)["']>([\s\S]*?)<\/file>/gi;
+    let fileMatch;
     while ((fileMatch = fileRegex.exec(rawText)) !== null) {
-      if (fileMatch.index < firstTagIndex) firstTagIndex = fileMatch.index
-      let code = fileMatch[2].trim().replace(/^```(?:gml|json)?\s*/i, '').replace(/\s*```$/i, '').trim()
-      changes.push({ path: fileMatch[1], code })
+      if (fileMatch.index < firstTagIndex) firstTagIndex = fileMatch.index;
+      const path = normalizePath(fileMatch[1]);
+      let code = cleanCodeBlock(fileMatch[2]);
+      
+      if (code === '') continue; // Escudo Anti-Wipe
+
+      // Proteção: se o arquivo já existe e a IA tentou reescrever ele minúsculo, bloqueia
+      if (currentFiles[path] && code.length < currentFiles[path].length * 0.15) continue;
+
+      fileStates[path] = code;
+      const entry = getChangeEntry(path);
+      entry.newCode = code;
+      if (!currentFiles[path]) entry.isNew = true;
     }
 
-    const changeRegex = /<change\s+path=["']([^"']+)["']>([\s\S]*?)(?:<\/change>|$)/gi
-    let changeMatch
+    // 3. CHANGE (Search & Replace)
+    const changeRegex = /<change\s+path=["']([^"']+)["']>([\s\S]*?)<\/change>/gi;
+    let changeMatch;
     while ((changeMatch = changeRegex.exec(rawText)) !== null) {
-      if (changeMatch.index < firstTagIndex) firstTagIndex = changeMatch.index
-      const path = changeMatch[1]
-      const innerContent = changeMatch[2]
-      const searchMatch = /<search>([\s\S]*?)(?:<\/search>|$)/i.exec(innerContent)
-      const replaceMatch = /<replace>([\s\S]*?)(?:<\/replace>|$)/i.exec(innerContent)
+      if (changeMatch.index < firstTagIndex) firstTagIndex = changeMatch.index;
+      const path = normalizePath(changeMatch[1]);
+      const innerContent = changeMatch[2];
+      
+      const searchMatch = /<search>([\s\S]*?)<\/search>/i.exec(innerContent);
+      const replaceMatch = /<replace>([\s\S]*?)<\/replace>/i.exec(innerContent);
 
       if (searchMatch && replaceMatch) {
-        const searchBlock = searchMatch[1].trim()
-        const replaceBlock = replaceMatch[1].trim().replace(/^```(?:gml)?\s*/i, '').replace(/\s*```$/i, '').trim()
-        const originalCode = currentFiles[path] || ""
-        const newCode = robustReplace(originalCode, searchBlock, replaceBlock)
+        // Limpa formatação Markdown que a IA insistir em colocar
+        const searchBlock = cleanCodeBlock(searchMatch[1]);
+        const replaceBlock = cleanCodeBlock(replaceMatch[1]);
+        
+        if (replaceBlock === '' && searchBlock !== '') continue; // Escudo Anti-Wipe
+
+        const currentCode = fileStates[path] || "";
+        const newCode = robustReplace(currentCode, searchBlock, replaceBlock);
+        const entry = getChangeEntry(path);
 
         if (newCode !== null) {
-          changes.push({ path, code: newCode })
+          if (newCode.trim() === '') continue; // Impede arquivo de ficar 100% vazio sem tag Delete
+          fileStates[path] = newCode;
+          entry.newCode = newCode;
         } else {
-          changes.push({ path, code: originalCode, searchFailed: true, suggestedBlock: replaceBlock, searchedBlock: searchBlock })
+          entry.searchFailed = true;
+          entry.searchedBlock += (entry.searchedBlock ? "\n\n--- PRÓXIMO BLOCO ---\n\n" : "") + searchBlock;
+          entry.suggestedBlock += (entry.suggestedBlock ? "\n\n--- PRÓXIMO BLOCO ---\n\n" : "") + replaceBlock;
         }
       }
     }
 
-    const deleteRegex = /<delete\s+path=["']([^"']+)["']>[\s\S]*?(?:<\/delete>|$)/gi
-    let deleteMatch
+    // 4. DELETE
+    const deleteRegex = /<delete\s+path=["']([^"']+)["'](?:\s*\/>|>[\s\S]*?<\/delete>)/gi;
+    let deleteMatch;
     while ((deleteMatch = deleteRegex.exec(rawText)) !== null) {
-      if (deleteMatch.index < firstTagIndex) firstTagIndex = deleteMatch.index
-      changes.push({ path: deleteMatch[1], isDelete: true, code: '' })
+      if (deleteMatch.index < firstTagIndex) firstTagIndex = deleteMatch.index;
+      const path = normalizePath(deleteMatch[1]);
+      delete fileStates[path];
+      
+      const entry = getChangeEntry(path);
+      entry.isDelete = true;
+      entry.newCode = '';
     }
 
     if (firstTagIndex < rawText.length) {
-      analysis = rawText.substring(0, firstTagIndex).trim()
+      analysis = rawText.substring(0, firstTagIndex).trim();
     }
 
-    const deduped = new Map()
-    for (const ch of changes) {
-      deduped.set(ch.path, ch)
+    // Cleanup de mensagem caso não tenha texto
+    if (!analysis && finalChangesMap.size > 0) {
+      const fileList = Array.from(finalChangesMap.keys()).map(p => p.split(/[/\\]/).pop()).join(', ')
+      analysis = `✅ Modificações aplicadas em: **${fileList}**`
     }
-    changes = Array.from(deduped.values())
 
-    return { analysis, changes }
+    const changes = Array.from(finalChangesMap.values());
+    return { analysis, changes };
   }
 
   const hideStreamingCode = (text) => {
@@ -659,14 +822,14 @@ export default function App() {
 
   const minifyGML = (code) => {
     return code
-      .replace(/\/\*[\s\S]*?\*\//g, '') 
-      .replace(/\/\/.*/g, '')           
-      .replace(/^\s*[\r\n]/gm, '')      
-      .replace(/[ \t]+/g, ' ')          
+      .replace(/\/\*[\s\S]*?\*\//g, '') // Remove blocos de comentário
+      .replace(/\/\/.*/g, '')           // Remove comentários de linha
+      .replace(/^\s*[\r\n]/gm, '')      // Remove linhas em branco
       .trim()
   }
 
   const handleAskAI = async () => {
+    // 1. Validações iniciais
     if (!inputText.trim() || isProcessing) return
   
     const userPrompt = inputText
@@ -677,198 +840,200 @@ export default function App() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     soundManager.play('sent.mp3')
   
+    // Adiciona pergunta do usuário ao chat
     setChatHistory(prev => [...prev, { role: 'user', content: userPrompt }])
   
     const isLocalMode = !appSettings?.aiMode || appSettings.aiMode === 'local'
     const activeSystemPrompt = isLocalMode ? SYSTEM_PROMPT_LOCAL : SYSTEM_PROMPT
-  
     const promptLower = userPrompt.toLowerCase()
     
+    // 2. Cálculo de Orçamento de Memória (Contexto)
     const contextSizeLimit = appSettings?.contextSize || (isLocalMode ? 4096 : 32768)
-    const tokensBudget     = Math.floor(contextSizeLimit * (isLocalMode ? 0.50 : 0.70))
+    const tokensBudget = Math.floor(contextSizeLimit * (isLocalMode ? 0.50 : 0.75))
   
+    // 3. Sistema de Pontuação de Relevância (RAG Local)
     const allEntries = Object.entries(files)
-    let relevant = []
+    let relevantFiles = []
     let repoContext = ""
     let sentFilesCount = 0
     
     const activeTabObj = workspaceTabs.find(t => t.id === activeTabId)
     const activeFilePath = activeTabObj ? activeTabObj.path : null
+    const activeGroup = activeFilePath ? activeFilePath.split(/[\\/]/).slice(-2, -1)[0] : null
+    const openFilePaths = workspaceTabs.filter(t => t.type === 'file' || t.type === 'diff').map(t => t.path)
+
+    const stopWords = ['como', 'para', 'fazer', 'onde', 'qual', 'quem', 'aqui', 'esse', 'isso', 'esta', 'este', 'mais', 'pode', 'sobre', 'então', 'quando', 'algum', 'alguma', 'quero', 'preciso'];
+    const keywords = promptLower.replace(/[^\w\s_]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !stopWords.includes(w))
+    const technicalWords = userPrompt.match(/[a-zA-Z]+_[a-zA-Z0-9_]+/g) || []
   
     if (allEntries.length > 0) {
-      const isDeletionIntent = /excluir|apagar|deletar|remover|limpar|lixo|desnecessário|inútil|vazio|empty|delete|remove|cleanup|clean.?up/i.test(promptLower)
-  
-      if (isDeletionIntent) {
-        relevant = allEntries
-          .map(([path, content]) => ({ path, content, tokens: estimateTokens(content) }))
-          .sort((a, b) => a.tokens - b.tokens)
-      } else if (/document|readme|visão geral|overview|estrutura|explicar|mapear|listar|resumo/i.test(promptLower)) {
-        relevant = allEntries.map(([path, content]) => ({ path, content, tokens: estimateTokens(content) })).sort((a, b) => a.tokens - b.tokens)
-      } else {
-        const keywords = promptLower.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
-        const scored = allEntries.map(([path, content]) => {
-          let score = 0
-          if (path === activeFilePath) score += 1000 
-          if (promptLower.includes(path.toLowerCase().split(/[\/\\]/).pop().replace(/\.(gml|yyp)$/, ''))) score += 150
-          keywords.forEach(kw => {
-            if (path.toLowerCase().includes(kw)) score += 25
-            score += Math.min((content.toLowerCase().match(new RegExp(kw, 'g')) || []).length * 3, 40)
-          })
-          return { path, content, score, tokens: estimateTokens(content) }
-        }).sort((a, b) => b.score - a.score)
+      const scored = allEntries.map(([path, content]) => {
+        let score = 0
+        const currentGroup = path.split(/[\\/]/).slice(-2, -1)[0]
         
-        relevant = scored.filter(e => e.score > 0)
+        // PRIORIDADE 1: Arquivo que o usuário está olhando agora
+        if (path === activeFilePath) score += 10000 
+        
+        // PRIORIDADE 2: Arquivos abertos em abas
+        else if (openFilePaths.includes(path)) score += 2000
 
-        // Se não achou palavras exatas, envia os maiores arquivos do projeto como contexto base
-        if (relevant.length === 0) {
-          relevant = allEntries
-            .map(([path, content]) => ({ path, content, tokens: estimateTokens(content) }))
-            .sort((a, b) => b.tokens - a.tokens) 
+        // PRIORIDADE 3: Relacionamentos (Dependency Graph) usando a nova lógica de Links
+        if (activeGroup && relationships.links) {
+          // Se o arquivo ativo chama/usa o arquivo iterado
+          const isDependency = relationships.links.some(l => l.from === activeGroup && l.to === currentGroup)
+          if (isDependency) score += 5000 
+          
+          // Se o arquivo iterado é quem chama o arquivo ativo
+          const isParent = relationships.links.some(l => l.to === activeGroup && l.from === currentGroup)
+          if (isParent) score += 3000
         }
-      }
+
+        // NOVO - PRIORIDADE ESPECIAL: Boost de Peso (Arquitetura central)
+        // A IA agora saberá instintivamente quais arquivos são as "veias principais" do código
+        if (relationships.weights && relationships.weights[currentGroup]) {
+          score += (relationships.weights[currentGroup] - 1) * 300 // Nós com peso máximo 5 ganham +1200
+        }
+
+        // PRIORIDADE 4: Match de termos técnicos (variáveis, nomes de objetos)
+        technicalWords.forEach(tw => {
+          if (path.includes(tw)) score += 1500
+          if (content.includes(tw)) score += 800
+        })
+
+        // PRIORIDADE 5: Match de palavras-chave simples
+        keywords.forEach(kw => {
+          if (path.toLowerCase().includes(kw)) score += 200
+          if (content.toLowerCase().includes(kw)) score += 100
+        })
+
+        return { path, content, score, tokens: estimateTokens(content) }
+      })
+      
+      // Ordena pelos mais relevantes primeiro
+      const sorted = scored.sort((a, b) => b.score - a.score)
   
-      let used = 0
-      const finalRelevant = []
-      for (const entry of relevant) {
-        if (used + entry.tokens > tokensBudget) continue
-        finalRelevant.push(entry)
-        used += entry.tokens
+      // Preenche o contexto até atingir o limite de tokens
+      let usedTokens = 0
+      for (const entry of sorted) {
+        if (usedTokens + entry.tokens > tokensBudget) break
+        relevantFiles.push(entry)
+        usedTokens += entry.tokens
       }
       
-      sentFilesCount = finalRelevant.length
-      if (finalRelevant.length > 0) {
-        repoContext = `ARQUIVOS RELEVANTES (Contexto para análise):\n\n` + finalRelevant.map(e => `--- ${e.path} ---\n${minifyGML(e.content)}\n\n`).join('')
+      sentFilesCount = relevantFiles.length
+      if (relevantFiles.length > 0) {
+        repoContext = `ARQUIVOS RELEVANTES (Use estes arquivos como base):\n\n` + 
+          relevantFiles.map(e => `--- FILE: ${e.path} ---\n${minifyGML(e.content)}\n`).join('\n')
       }
     }
   
-    let focusContext = ""
-    if (activeFilePath) {
-      focusContext = `[NOTA: O usuário está visualizando o arquivo "${activeFilePath}" no momento. Considere este arquivo como foco principal.]\n`
-    }
-  
-    const fileTreeLines = Object.entries(files).map(([p, c]) => {
-      const isEmpty   = c.trim().length === 0
-      const lineCount = isEmpty ? 0 : c.split('\n').filter(l => l.trim()).length
-      return isEmpty
-        ? `- ${p}  ← [ARQUIVO VAZIO]`
-        : `- ${p}  (${lineCount} linhas)`
-    })
+    // 4. Construção do Prompt Final
+    const focusNote = activeFilePath ? `[FOCO ATUAL: O usuário está editando o arquivo "${activeFilePath}"]\n` : ""
+    const treeLines = Object.entries(files).map(([p, c]) => `- ${p} (${c.split('\n').length} linhas)`)
+    const treeContext = `ESTRUTURA DO PROJETO:\n${treeLines.join('\n')}\n\n`
     
-    const treeContext = `ESTRUTURA DO PROJETO ATUAL:\n${fileTreeLines.join('\n')}\n\n`
-    const fullPrompt = `${focusContext}${treeContext}${repoContext ? repoContext + '\n' : ''}SOLICITAÇÃO DO USUÁRIO: ${userPrompt}`
+    const fullPrompt = `${focusNote}${treeContext}${repoContext}\nSOLICITAÇÃO DO USUÁRIO: ${userPrompt}`
   
+    // 5. Execução da Inferência (Local ou Online)
     try {
       let rawResponseText = ""
       
       if (isLocalMode) {
-        let wasAborted = false
+        // --- MODO LOCAL ---
         let writingSoundStarted = false
-  
         const tokenHandler = ({ chunk, done, aborted }) => {
-          // CORREÇÃO AQUI: removido o "!isProcessing" que congelava a IA
-          if (aborted) {
-            wasAborted = true
-            soundManager.stopWritingSound()
-            return
-          }
-          if (!done) {
-            if (!writingSoundStarted && chunk) {
-              soundManager.startWritingSound()
-              writingSoundStarted = true
-            }
-            rawResponseText += chunk
-            setStreamingText(hideStreamingCode(rawResponseText))
-          } else {
-            soundManager.stopWritingSound()
-          }
-        }
-  
-        window.electron.on('llm-token', tokenHandler)
-  
-        const response = await window.electron.chatNativeModelStream({
-          systemPrompt: activeSystemPrompt,
-          userPrompt:   fullPrompt,
-          temperature:  Math.min(appSettings?.temperature ?? 0.3, 0.5),
-          maxTokens:    appSettings?.maxTokens ?? 2048,
-        })
-  
-        window.electron.off('llm-token', tokenHandler)
-        setStreamingText("")
-        
-        if (response.aborted || wasAborted) rawResponseText = rawResponseText.trim() + "\n\n*[Geração Interrompida]*"
-        else if (!response.ok) throw new Error(response.error)
-        else rawResponseText = response.data
-  
-      } else {
-        let wasAborted = false
-        let writingSoundStarted = false
-  
-        const tokenHandler = ({ chunk, done, error, aborted }) => {
-          // CORREÇÃO AQUI: removido o "!isProcessing"
-          if (aborted) { wasAborted = true; soundManager.stopWritingSound(); return }
-          if (error)   { soundManager.stopWritingSound(); throw new Error(error) }
+          if (aborted) { soundManager.stopWritingSound(); return }
           if (!done) {
             if (!writingSoundStarted && chunk) { soundManager.startWritingSound(); writingSoundStarted = true }
             rawResponseText += chunk
             setStreamingText(hideStreamingCode(rawResponseText))
-          } else {
-            soundManager.stopWritingSound()
-          }
+          } else { soundManager.stopWritingSound() }
         }
-  
-        window.electron.on('online-llm-token', tokenHandler)
-  
-        let messages = [{ role: 'system', content: activeSystemPrompt }]
-        chatHistory.forEach(msg => {
-          if (msg.role === 'user')      messages.push({ role: 'user',      content: msg.content      })
-          if (msg.role === 'assistant') messages.push({ role: 'assistant', content: msg.analysis || '' })
+
+        window.electron.on('llm-token', tokenHandler)
+        const response = await window.electron.chatNativeModelStream({
+          systemPrompt: activeSystemPrompt,
+          userPrompt:   fullPrompt,
+          temperature:  appSettings?.temperature ?? 0.3,
+          maxTokens:    appSettings?.maxTokens ?? 2048,
         })
-        messages.push({ role: 'user', content: fullPrompt })
-  
+        setStreamingText("")
+        if (response.aborted) rawResponseText += "\n\n*[Interrompido]*"
+        else if (!response.ok) throw new Error(response.error)
+        else if (!rawResponseText.trim() && response.data) rawResponseText = response.data
+
+      } else {
+        // --- MODO ONLINE (API) ---
+        let writingSoundStarted = false
+        const tokenHandler = ({ chunk, done, error, aborted }) => {
+          if (aborted) { soundManager.stopWritingSound(); return }
+          if (error) throw new Error(error)
+          if (!done) {
+            if (!writingSoundStarted && chunk) { soundManager.startWritingSound(); writingSoundStarted = true }
+            rawResponseText += chunk
+            setStreamingText(hideStreamingCode(rawResponseText))
+          } else { soundManager.stopWritingSound() }
+        }
+
+        window.electron.on('online-llm-token', tokenHandler)
+        const messages = [
+          { role: 'system', content: activeSystemPrompt },
+          ...chatHistory.slice(-6).map(m => ({ 
+            role: m.role, 
+            content: m.role === 'user' ? m.content : (m.raw || m.analysis) 
+          })),
+          { role: 'user', content: fullPrompt }
+        ]
+
         const response = await window.electron.aiChatRequestStream({
           baseUrl: appSettings.onlineBaseUrl,
           headers: { 'Authorization': `Bearer ${appSettings.onlineKey}` },
           body: {
-            model:      appSettings.onlineModel,
+            model: appSettings.onlineModel,
             messages,
-            temperature: appSettings.temperature ?? INFERENCE_PARAMS.online.temperature,
-            max_tokens:  appSettings.maxTokens === -1 ? undefined : appSettings.maxTokens,
+            temperature: appSettings.temperature ?? 0.3,
+            max_tokens: appSettings.maxTokens === -1 ? undefined : appSettings.maxTokens,
           }
         })
-  
-        window.electron.off('online-llm-token', tokenHandler)
         setStreamingText("")
-  
-        if (wasAborted) rawResponseText = rawResponseText.trim() + "\n\n*[Geração Interrompida]*"
-        else if (!response.ok) throw new Error(response.error)
+        if (!response.ok) throw new Error(response.error)
       }
-  
+      
+      // 6. Verificação de Integridade (Security Lock)
+      // Se a resposta terminar com uma tag aberta, a IA provavelmente foi cortada por limite de tokens.
+      const hasUnclosedTags = (
+        (rawResponseText.includes('<change') && !rawResponseText.includes('</change>')) ||
+        (rawResponseText.includes('<file') && !rawResponseText.includes('</file>')) ||
+        (rawResponseText.includes('<search') && !rawResponseText.includes('</search>'))
+      );
+
+      if (hasUnclosedTags) {
+        rawResponseText += "\n\n> ⚠️ **ERRO DE INTEGRIDADE:** O código foi cortado por limite de tokens. Alterações automáticas bloqueadas para evitar corrupção de arquivos.";
+      }
+
+      // 7. Processamento Final e UI
       const { analysis, changes } = parseAIResponse(rawResponseText, files)
+      
       setChatHistory(prev => [...prev, {
         role: 'assistant',
         analysis: analysis || rawResponseText,
         raw: rawResponseText,
-        changes: changes,
+        changes: hasUnclosedTags ? [] : changes, // Bloqueia mudanças se o código estiver incompleto
         filesAnalyzed: sentFilesCount
       }])
-      if (changes.length > 0) openDiffTabs(changes, analysis || rawResponseText)
+
+      if (changes.length > 0 && !hasUnclosedTags) {
+        openDiffTabs(changes, analysis || rawResponseText)
+      }
   
     } catch (e) {
       setStreamingText("")
-      let errorMessage = e.message
-      
-      if (errorMessage.includes('413') || errorMessage.includes('rate_limit_exceeded')) {
-        errorMessage = `A API recusou a requisição por ser muito grande (Erro 413 - Rate Limit).\n\n🔹 Vá nas "Configs" e reduza o "Máx Tokens (Saída)".`
-      }
-      
-      if (errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED')) {
-        errorMessage = `Você atingiu o limite de mensagens da API (Erro 429 - Cota Excedida).\n\n⏳ Aguarde cerca de 30 a 60 segundos e tente novamente.\n\n💡 Dica: Nas Configs, diminua o "Tamanho do Contexto" para não esgotar o limite tão rápido.`
-      }
-  
-      setChatHistory(prev => [...prev, { role: 'error', content: errorMessage }])
+      setChatHistory(prev => [...prev, { role: 'error', content: `Erro na IA: ${e.message}` }])
     } finally {
+      window.electron.off('llm-token'); 
+      window.electron.off('online-llm-token'); 
       soundManager.stopWritingSound()
-      setIsProcessing(false) // Libera a UI
+      setIsProcessing(false)
       if (textareaRef.current) textareaRef.current.focus()
     }
   }
@@ -893,7 +1058,23 @@ export default function App() {
     if (selectedModel?.isNative) window.electron.resetNativeSession?.()
   }
 
-  if (isLoadingSettings) return <div style={{ background: C.bg, height: '100vh', display:'flex', alignItems:'center', justifyContent:'center', color: C.text }}>Carregando Configurações...</div>
+  if (isLoadingSettings) {
+    return (
+      <div style={{ background: C.bg, height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: C.text }}>
+        <div style={{ fontSize: 90, marginBottom: 20, animation: 'pulse 2s infinite ease-in-out' }}>🎮</div>
+        <h1 style={{ color: C.accent, marginBottom: 10, fontWeight: 'bold' }}>GML Assistant</h1>
+        <p style={{ color: C.textMuted, fontSize: 14 }}>Iniciando o cérebro da operação...</p>
+        
+        <style>{`
+          @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.05); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+          }
+        `}</style>
+      </div>
+    )
+  }
 
   if (!appSettings.aiMode) {
     return <SetupWizard onComplete={handleSetupComplete} />
@@ -913,103 +1094,239 @@ export default function App() {
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         
-        {/* --- PAINEL ESQUERDO: ARQUIVOS --- */}
-        <aside style={{ width: 240, background: C.elevated, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: 15, borderBottom: `1px solid ${C.border}` }}>
-            <button onClick={handleSelectFolder} style={{ width: '100%', padding: '8px', borderRadius: 6, background: C.accent, color: '#000', border: 'none', fontWeight: 'bold', cursor: 'pointer', marginBottom: 10 }}>Abrir .yyp</button>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {appSettings.aiMode === 'local' && (
-                <button onClick={() => setShowModelHub(true)} style={{ flex: 1, padding: '6px', borderRadius: 6, background: C.surface, color: C.text, border: `1px solid ${C.border}`, cursor: 'pointer', fontSize: 11 }}>🤖 Modelos</button>
-              )}
-              <button onClick={() => setShowSettings(true)} style={{ flex: 1, padding: '6px', borderRadius: 6, background: C.surface, color: C.text, border: `1px solid ${C.border}`, cursor: 'pointer', fontSize: 11 }}>⚙️ Configs</button>
+        {/* --- PAINEL ESQUERDO: ARQUIVOS (RETRÁTIL) --- */}
+        <aside style={{
+          width: leftCollapsed ? 44 : 240,
+          background: C.elevated,
+          borderRight: `1px solid ${C.border}`,
+          display: 'flex',
+          flexDirection: 'column',
+          transition: 'width 0.22s ease',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}>
+          {/* Cabeçalho: toggle + ações */}
+          <div style={{ padding: leftCollapsed ? '8px 6px' : '10px 15px', borderBottom: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+            {/* Botão de collapse SEMPRE visível */}
+            <div style={{ display: 'flex', justifyContent: leftCollapsed ? 'center' : 'flex-end' }}>
+              <button
+                onClick={() => setLeftCollapsed(p => !p)}
+                title={leftCollapsed ? 'Expandir painel' : 'Recolher painel'}
+                style={{
+                  background: 'none', border: `1px solid ${C.border}`,
+                  borderRadius: 5, color: C.textMuted,
+                  cursor: 'pointer', padding: '3px 7px',
+                  fontSize: 11, transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = C.text}
+                onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+              >
+                {leftCollapsed ? '▶' : '◀'}
+              </button>
             </div>
-          </div>
-          
-          <div style={{ padding: '8px 15px', borderBottom: `1px solid ${C.border}`, fontSize: 10, color: C.textMuted, display: 'flex', justifyContent: 'space-between' }}>
-            <span>ARQUIVOS DE CÓDIGO</span>
-            <span>{Object.keys(files).length}</span>
-          </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-            {Object.keys(files).length === 0 ? <p style={{ color: C.textMuted, textAlign: 'center', fontSize: 12, marginTop: 20 }}>Nenhum projeto lido</p> : (
-              Object.keys(files).map(path => (
-                <div 
-                  key={path} 
-                  style={{ 
-                    display: 'flex', 
-                    alignItems: 'center',
-                    padding: '4px 6px', 
-                    borderRadius: 4, 
-                    marginBottom: 2, 
-                    border: '1px solid transparent', 
-                    background: activeTab?.path === path ? C.border : 'transparent',
-                  }} 
-                  onMouseEnter={(e) => e.currentTarget.style.borderColor = C.border} 
-                  onMouseLeave={(e) => e.currentTarget.style.borderColor = 'transparent'}
+            {/* Conteúdo visível só quando expandido */}
+            {!leftCollapsed && (
+              <>
+                <button
+                  onClick={handleSelectFolder}
+                  style={{ width: '100%', padding: '8px', borderRadius: 6, background: C.accent, color: '#000', border: 'none', fontWeight: 'bold', cursor: 'pointer' }}
                 >
-                  <div 
-                    onClick={() => openFileTab(path)} 
-                    style={{ flex: 1, fontSize: 11, color: C.textDim, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    title={path}
-                  >
-                    {parseGMLFilename(path)}
-                  </div>
-                  
-                  <button 
-                    onClick={(e) => handleDeleteFile(e, path)}
-                    title="Excluir arquivo"
-                    style={{
-                      background: 'none', border: 'none', color: C.danger, 
-                      cursor: 'pointer', fontSize: 14, opacity: 0.6, 
-                      padding: '0 4px', display: 'flex', alignItems: 'center'
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
-                    onMouseLeave={(e) => e.currentTarget.style.opacity = 0.6}
-                  >
-                    ×
-                  </button>
+                  Abrir .yyp
+                </button>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {appSettings.aiMode === 'local' && (
+                    <button
+                      onClick={() => setShowModelHub(true)}
+                      style={{ flex: 1, padding: '6px', borderRadius: 6, background: C.surface, color: C.text, border: `1px solid ${C.border}`, cursor: 'pointer', fontSize: 11 }}
+                    >🤖 Modelos</button>
+                  )}
+                  <button
+                    onClick={() => setShowSettings(true)}
+                    style={{ flex: 1, padding: '6px', borderRadius: 6, background: C.surface, color: C.text, border: `1px solid ${C.border}`, cursor: 'pointer', fontSize: 11 }}
+                  >⚙️ Configs</button>
                 </div>
-              ))
+              </>
             )}
           </div>
+
+          {/* Label de seção + contagem (só expandido) */}
+          {!leftCollapsed && (
+            <div style={{ padding: '8px 15px', borderBottom: `1px solid ${C.border}`, fontSize: 10, color: C.textMuted, display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
+              <span>ARQUIVOS DE CÓDIGO</span>
+              <span>{Object.keys(files).length}</span>
+            </div>
+          )}
+
+          {/* Lista de arquivos (só expandido) */}
+          {!leftCollapsed && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+              {Object.keys(files).length === 0
+                ? <p style={{ color: C.textMuted, textAlign: 'center', fontSize: 12, marginTop: 20 }}>Nenhum projeto lido</p>
+                : Object.keys(files).map(path => (
+                  <div
+                    key={path}
+                    style={{
+                      display: 'flex', alignItems: 'center',
+                      padding: '4px 6px', borderRadius: 4, marginBottom: 2,
+                      border: '1px solid transparent',
+                      background: activeTab?.path === path ? C.border : 'transparent',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = C.border}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = 'transparent'}
+                  >
+                    <div
+                      onClick={() => openFileTab(path)}
+                      style={{ flex: 1, fontSize: 11, color: C.textDim, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={path}
+                    >
+                      {parseGMLFilename(path)}
+                    </div>
+                    <button
+                      onClick={e => handleDeleteFile(e, path)}
+                      title="Excluir arquivo"
+                      style={{ background: 'none', border: 'none', color: C.danger, cursor: 'pointer', fontSize: 14, opacity: 0.6, padding: '0 4px', display: 'flex', alignItems: 'center' }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                      onMouseLeave={e => e.currentTarget.style.opacity = 0.6}
+                    >×</button>
+                  </div>
+                ))
+              }
+            </div>
+          )}
+
+          {/* Ícone de arquivo quando colapsado */}
+          {leftCollapsed && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 6, overflowY: 'auto' }}>
+              {Object.keys(files).slice(0, 20).map(path => (
+                <div
+                  key={path}
+                  onClick={() => { openFileTab(path); setLeftCollapsed(false) }}
+                  title={parseGMLFilename(path)}
+                  style={{
+                    width: 30, height: 30, borderRadius: 6,
+                    background: activeTab?.path === path ? C.border : C.surface,
+                    border: `1px solid ${activeTab?.path === path ? C.accent : C.border}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = activeTab?.path === path ? C.accent : C.border}
+                >
+                  📄
+                </div>
+              ))}
+            </div>
+          )}
         </aside>
 
         {/* --- PAINEL CENTRAL: WORKSPACE --- */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: C.bg }}>
-          <div style={{ display: 'flex', background: C.surface, borderBottom: `1px solid ${C.border}`, overflowX: 'auto', padding: '8px 8px 0 8px' }}>
-            {workspaceTabs.length === 0 ? <div style={{ padding: '8px', color: C.textMuted, fontSize: 12 }}>Workspace Vazio</div> : (
-              workspaceTabs.map(tab => (
-                <div key={tab.id} onClick={() => setActiveTabId(tab.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 15px', minWidth: 120, maxWidth: 200, cursor: 'pointer', background: activeTabId === tab.id ? C.bg : 'transparent', border: `1px solid ${activeTabId === tab.id ? C.border : 'transparent'}`, borderBottom: 'none', borderRadius: '6px 6px 0 0', color: activeTabId === tab.id ? (tab.type === 'diff' ? C.warning : C.text) : C.textMuted, fontWeight: activeTabId === tab.id ? 'bold' : 'normal' }}>
-                  
-                  <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tab.path}>
-                    {tab.type === 'diff' ? '⚠️ ' : ''}{parseGMLFilename(tab.path)}
-                  </span>
-                  
-                  <button onClick={(e) => closeTab(e, tab.id)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.6, fontSize: 14 }}>×</button>
-                </div>
-              ))
+          <div style={{ display: 'flex', alignItems: 'stretch', background: C.surface, borderBottom: `1px solid ${C.border}`, padding: '8px 8px 0 8px', gap: 0, overflow: 'hidden' }}>
+            {/* Abas de arquivo — só no modo Code */}
+            {workspaceMode === 'code' && (
+              <div style={{ flex: 1, display: 'flex', overflowX: 'auto', gap: 0 }}>
+                {workspaceTabs.length === 0
+                  ? <div style={{ padding: '8px', color: C.textMuted, fontSize: 12, alignSelf: 'center' }}>Workspace Vazio</div>
+                  : workspaceTabs.map(tab => (
+                    <div
+                      key={tab.id}
+                      onClick={() => setActiveTabId(tab.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '6px 15px', minWidth: 120, maxWidth: 200,
+                        cursor: 'pointer',
+                        background: activeTabId === tab.id ? C.bg : 'transparent',
+                        border: `1px solid ${activeTabId === tab.id ? C.border : 'transparent'}`,
+                        borderBottom: 'none',
+                        borderRadius: '6px 6px 0 0',
+                        color: activeTabId === tab.id ? (tab.type === 'diff' ? C.warning : C.text) : C.textMuted,
+                        fontWeight: activeTabId === tab.id ? 'bold' : 'normal',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tab.path}>
+                        {tab.type === 'diff' ? '⚠️ ' : ''}{parseGMLFilename(tab.path)}
+                      </span>
+                      <button onClick={e => closeTab(e, tab.id)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.6, fontSize: 14 }}>×</button>
+                    </div>
+                  ))
+                }
+              </div>
             )}
+
+            {/* No modo visual, espaço em branco para empurrar o toggle para a direita */}
+            {workspaceMode === 'visual' && <div style={{ flex: 1 }} />}
+
+            {/* Toggle Código ↔ Visual */}
+            <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', paddingBottom: 6, paddingLeft: 8, flexShrink: 0 }}>
+              {(['code', 'visual']).map(mode => (
+                <button
+                  key={mode}
+                  onClick={() => setWorkspaceMode(mode)}
+                  style={{
+                    padding: '5px 12px', fontSize: 11, cursor: 'pointer',
+                    borderRadius: '6px 6px 0 0',
+                    border: `1px solid ${workspaceMode === mode ? C.border : 'transparent'}`,
+                    borderBottom: workspaceMode === mode ? `1px solid ${C.bg}` : '1px solid transparent',
+                    background: workspaceMode === mode ? C.bg : 'transparent',
+                    color: workspaceMode === mode ? C.accent : C.textMuted,
+                    fontWeight: workspaceMode === mode ? 'bold' : 'normal',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { if (workspaceMode !== mode) e.currentTarget.style.color = C.text }}
+                  onMouseLeave={e => { if (workspaceMode !== mode) e.currentTarget.style.color = C.textMuted }}
+                >
+                  {mode === 'code' ? '📝 Código' : '🎮 Visual'}
+                </button>
+              ))}
+            </div>
           </div>
           <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-            {!activeTab ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: C.textMuted, fontSize: 14 }}>Abra um arquivo ou faça uma pergunta à IA.</div>
-            ) : activeTab.type === 'diff' ? (
-              <DiffViewer
-                key={activeTab.id}
-                fileName={activeTab.path}
-                oldCode={activeTab.oldCode}
-                newCode={activeTab.newCode}
-                analysisText={activeTab.analysisText || ''}
-                searchFailed={activeTab.searchFailed}
-                suggestedBlock={activeTab.suggestedBlock}
-                searchedBlock={activeTab.searchedBlock}
-                isDelete={activeTab.isDelete}
-                isNew={activeTab.isNew}
-                onAccept={() => handleApplyChange(activeTab)}
-                onReject={() => {soundManager.play('negated.mp3'); closeTab({ stopPropagation:()=>{} }, activeTab.id);}}
+            {workspaceMode === 'visual' ? (
+              /* ── MODO VISUAL: canvas drag-and-drop ── */
+              <VisualWorkspace
+                tabs={workspaceTabs}
+                allFiles={files}
+                onAccept={(tab) => handleApplyChange(tab)}
+                onReject={(tab) => { soundManager.play('negated.mp3'); closeTab({ stopPropagation: () => {} }, tab.id) }}
+                onClose={(tabId) => closeTab({ stopPropagation: () => {} }, tabId)}
               />
             ) : (
-              <textarea readOnly value={activeTab.content} style={{ width: '100%', height: '100%', background: C.bg, color: C.textDim, border: 'none', padding: 20, fontSize: 13, fontFamily: 'monospace', resize: 'none', outline: 'none' }} />
+              /* ── MODO CODE: texto bruto puro ── */
+              !activeTab ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: C.textMuted, fontSize: 14 }}>
+                  Abra um arquivo ou faça uma pergunta à IA.
+                </div>
+              ) : activeTab.type === 'diff' ? (
+                <DiffViewer
+                  key={activeTab.id}
+                  fileName={activeTab.path}
+                  oldCode={activeTab.oldCode}
+                  newCode={activeTab.newCode}
+                  analysisText={activeTab.analysisText || ''}
+                  searchFailed={activeTab.searchFailed}
+                  suggestedBlock={activeTab.suggestedBlock}
+                  searchedBlock={activeTab.searchedBlock}
+                  isDelete={activeTab.isDelete}
+                  isNew={activeTab.isNew}
+                  onAccept={() => handleApplyChange(activeTab)}
+                  onReject={() => { soundManager.play('negated.mp3'); closeTab({ stopPropagation: () => {} }, activeTab.id) }}
+                />
+              ) : (
+                <textarea
+                  readOnly
+                  value={activeTab.content}
+                  style={{
+                    width: '100%', height: '100%',
+                    background: C.bg, color: C.textDim,
+                    border: 'none', padding: 20,
+                    fontSize: 13, fontFamily: 'monospace',
+                    resize: 'none', outline: 'none',
+                  }}
+                />
+              )
             )}
           </div>
         </main>

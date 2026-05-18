@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react'
 import { C, parseGMLFilename } from './constants'
-import {soundManager} from './soundManager'
+import { soundManager } from './soundManager'
 
 export default function DiffViewer({ 
   fileName, oldCode, newCode, analysisText, 
@@ -12,6 +12,7 @@ export default function DiffViewer({
   const [showFullFile, setShowFullFile]       = useState(false)
   const [analysisVisible, setAnalysisVisible] = useState(false)
   const [copiedNew, setCopiedNew]             = useState(false)
+  const [showFailedBlocks, setShowFailedBlocks] = useState(false) // NOVO ESTADO
   const leftScrollRef  = useRef(null)
   const rightScrollRef = useRef(null)
 
@@ -22,7 +23,6 @@ export default function DiffViewer({
     }
   }
 
-  // Atalho de Teclado: Ctrl + Enter para Aceitar
   React.useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.ctrlKey && e.key === 'Enter') {
@@ -43,8 +43,8 @@ export default function DiffViewer({
 
   // ── 1. SE A IA PEDIU PARA EXCLUIR ──────────────────────────────────────────
   if (isDelete) {
+    // ... [MANTENHA O CÓDIGO DE DELETE EXISTENTE AQUI]
     const hasContent = oldCode && oldCode.trim().length > 0
-
     return (
       <div style={{ padding: 30, color: C.text, height: '100%', overflowY: 'auto' }}>
         <div style={{ background: C.dangerDim, border: `1px solid ${C.danger}`, padding: 20, borderRadius: 12 }}>
@@ -52,49 +52,23 @@ export default function DiffViewer({
             🗑️ Exclusão Solicitada pela IA
           </h2>
           <p style={{ color: C.textDim, marginBottom: 20 }}>
-            A IA solicitou a <b>exclusão permanente</b> do arquivo{' '}
-            <code style={{ color: C.warning }}>{fileName}</code> e de seus metadados no GameMaker.
+            A IA solicitou a exclusão permanente de {fileName}.
           </p>
-
-          {!hasContent && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 14px', background: C.successDim,
-              border: `1px solid ${C.success}55`, borderRadius: 8, marginBottom: 16,
-              fontSize: 12, color: C.success,
-            }}>
-              ✓ Este arquivo está vazio — nenhum código será perdido.
-            </div>
-          )}
-
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginBottom: 20 }}>
-            <button onClick={onReject} style={{ padding: '8px 16px', background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: 'pointer' }}>
-              ✕ Manter Arquivo (Rejeitar)
-            </button>
-            <button onClick={onAccept} style={{ padding: '8px 16px', background: C.danger, color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>
-              ✓ Confirmar Exclusão
-            </button>
+            <button onClick={onReject} style={{ padding: '8px 16px', background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: 'pointer' }}>✕ Rejeitar</button>
+            <button onClick={onAccept} style={{ padding: '8px 16px', background: C.danger, color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>✓ Confirmar</button>
           </div>
-
-          {hasContent ? (
-            <>
-              <strong style={{ color: C.text, fontSize: 12 }}>⚠️ CONTEÚDO QUE SERÁ PERDIDO:</strong>
-              <pre style={{ background: C.bg, padding: 15, borderRadius: 8, fontSize: 12, border: `1px solid ${C.danger}44`, overflowX: 'auto', marginTop: 8, opacity: 0.8 }}>
-                {oldCode}
-              </pre>
-            </>
-          ) : (
-            <div style={{ padding: 15, background: C.bg, borderRadius: 8, border: `1px dashed ${C.border}`, color: C.textMuted, fontSize: 12, fontStyle: 'italic', textAlign: 'center' }}>
-              Este arquivo já está completamente vazio. Nenhuma linha de código será perdida.
-            </div>
-          )}
         </div>
       </div>
     )
   }
 
-  // ── 2. SE FALHOU A BUSCA (MODIFICAÇÃO ERRADA) ──────────────────────────────
-  if (searchFailed) {
+  // Lógica para definir se foi uma Falha Total ou Sucesso Parcial
+  const isTotalFailure = searchFailed && (oldCode === newCode);
+  const isPartialSuccess = searchFailed && (oldCode !== newCode);
+
+  // ── 2. SE FALHOU TUDO (FALHA TOTAL) ────────────────────────────────────────
+  if (isTotalFailure) {
     const handleCopyBlock = (text, setter) => {
       navigator.clipboard.writeText(text)
       setter(true)
@@ -108,42 +82,31 @@ export default function DiffViewer({
             ⚠️ A IA não encontrou o trecho exato para substituir
           </h2>
           <p style={{ color: C.textDim, marginBottom: 20 }}>
-            Isso geralmente acontece quando a IA tenta substituir um código com formatação, espaços ou
-            linhas diferentes do arquivo original. Copie e cole o bloco abaixo manualmente.
+            Nenhuma das alterações pôde ser aplicada automaticamente. Copie os trechos abaixo manualmente.
           </p>
 
           <div style={{ display: 'flex', gap: 20 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <strong style={{ color: C.danger, fontSize: 12 }}>TRECHO QUE A IA PROCUROU:</strong>
-              </div>
-              <pre style={{ background: C.bg, padding: 15, borderRadius: 8, fontSize: 12, border: `1px solid ${C.border}`, overflowX: 'auto', marginTop: 0 }}>{searchedBlock}</pre>
+              <strong style={{ color: C.danger, fontSize: 12 }}>TRECHO PROCURADO:</strong>
+              <pre style={{ background: C.bg, padding: 15, borderRadius: 8, fontSize: 12, border: `1px solid ${C.border}`, overflowX: 'auto' }}>{searchedBlock}</pre>
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <strong style={{ color: C.success, fontSize: 12 }}>NOVO CÓDIGO SUGERIDO:</strong>
-                <button
-                  onClick={() => handleCopyBlock(suggestedBlock, setCopiedNew)}
-                  style={{ fontSize: 10, padding: '2px 8px', background: C.successDim, color: copiedNew ? C.success : C.textMuted, border: `1px solid ${C.success}33`, borderRadius: 4, cursor: 'pointer' }}
-                >
-                  {copiedNew ? '✓ Copiado!' : '📋 Copiar'}
-                </button>
+                <strong style={{ color: C.success, fontSize: 12 }}>NOVO CÓDIGO:</strong>
+                <button onClick={() => handleCopyBlock(suggestedBlock, setCopiedNew)} style={{ fontSize: 10, padding: '4px 8px', background: C.successDim, color: copiedNew ? C.success : C.textMuted, border: `1px solid ${C.success}33`, borderRadius: 4, cursor: 'pointer' }}>{copiedNew ? '✓ Copiado!' : '📋 Copiar'}</button>
               </div>
-              <pre style={{ background: C.bg, padding: 15, borderRadius: 8, fontSize: 12, border: `1px solid ${C.border}`, overflowX: 'auto', marginTop: 0 }}>{suggestedBlock}</pre>
+              <pre style={{ background: C.bg, padding: 15, borderRadius: 8, fontSize: 12, border: `1px solid ${C.border}`, overflowX: 'auto' }}>{suggestedBlock}</pre>
             </div>
           </div>
-
           <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={onReject} style={{ padding: '8px 16px', background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: 'pointer' }}>
-              Fechar e Descartar
-            </button>
+            <button onClick={onReject} style={{ padding: '8px 16px', background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: 'pointer' }}>Fechar e Descartar</button>
           </div>
         </div>
       </div>
     )
   }
 
-  // ── Lógica do Diff ─────────────────────────────────────────────────────────
+  // ── Lógica do Diff (Para Sucesso e Sucesso Parcial) ────────────────────────
   const oldLines = (oldCode || '').split('\n')
   const newLines = (newCode || '').split('\n')
 
@@ -267,6 +230,36 @@ export default function DiffViewer({
           <button onClick={onAccept} title="Atalho: Ctrl + Enter" style={{ padding: '6px 14px', borderRadius: 6, background: C.successDim, color: C.success, border: `1px solid ${C.success}44`, cursor: 'pointer', fontWeight: 'bold', fontSize: 12 }}>✓ Aceitar (Ctrl+Enter)</button>
         </div>
       </div>
+      
+      {/* ── BANNER DE SUCESSO PARCIAL (NOVO) ───────────────────────────────── */}
+      {isPartialSuccess && (
+        <div style={{ flexShrink: 0, background: C.warningDim, borderBottom: `1px solid ${C.warning}55`, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 15px' }}>
+            <span style={{ color: C.warning, fontSize: 12 }}>
+              ⚠️ <b>Atenção:</b> Algumas modificações extras sugeridas pela IA falharam ao buscar o código original (mas as alterações abaixo <b>deram certo</b>).
+            </span>
+            <button 
+              onClick={() => setShowFailedBlocks(!showFailedBlocks)} 
+              style={{ background: 'transparent', border: `1px solid ${C.warning}`, color: C.warning, padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}
+            >
+              {showFailedBlocks ? 'Ocultar Erros' : 'Ver Trechos Falhos'}
+            </button>
+          </div>
+          
+          {showFailedBlocks && (
+            <div style={{ display: 'flex', gap: 15, padding: 15, background: C.bg, borderTop: `1px dashed ${C.warning}55`, maxHeight: 250, overflowY: 'auto' }}>
+              <div style={{ flex: 1 }}>
+                <strong style={{ color: C.danger, fontSize: 10 }}>FALHOU EM ACHAR:</strong>
+                <pre style={{ background: C.elevated, padding: 10, borderRadius: 6, fontSize: 11, border: `1px solid ${C.border}`, marginTop: 4 }}>{searchedBlock}</pre>
+              </div>
+              <div style={{ flex: 1 }}>
+                <strong style={{ color: C.success, fontSize: 10 }}>A IA QUERIA TROCAR POR:</strong>
+                <pre style={{ background: C.elevated, padding: 10, borderRadius: 6, fontSize: 11, border: `1px solid ${C.border}`, marginTop: 4 }}>{suggestedBlock}</pre>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Labels das colunas ─────────────────────────────────────────────── */}
       {!isNew && (
