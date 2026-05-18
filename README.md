@@ -1,14 +1,15 @@
+
 <div align="center">
 
-# GML Assistant
+<!-- TODO: Inserir a logo do projeto aqui -->
+<!-- <img src="assets/logo.png" width="150" alt="GML Assistant Logo" /> -->
 
+# GML Assistant
 ### AI Workspace Companion for GameMaker Studio 2
 
 <p>
 Context-aware AI tooling focused on large GML projects, debugging, refactoring, and accelerated implementation workflows.
 </p>
-
-<br/>
 
 <img src="https://img.shields.io/badge/Open%20Source-Yes-3fb950?style=for-the-badge" />
 <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" />
@@ -27,137 +28,135 @@ Context-aware AI tooling focused on large GML projects, debugging, refactoring, 
 
 ---
 
-# Overview
+> **Philosophy:** AI should enhance engineering workflows, not replace engineering discipline. This is not an autonomous game generator; it is a collaborative technical accelerator.
 
-GML Assistant is an open-source desktop application created specifically for GameMaker Studio 2 developers who work with medium to large `.yyp` projects and need a more practical way to integrate AI into real development workflows. Instead of behaving like a generic chatbot disconnected from the project structure, the application attempts to understand the workspace itself, retrieve relevant files, analyze relationships between scripts and objects, and provide context-aware assistance focused on actual engineering tasks.
-
-The project was created around a simple idea: modern AI models are extremely useful for software development, but most existing tools are optimized either for web development ecosystems or for short isolated prompts. GameMaker projects often become difficult to manage as they grow because mechanics are heavily interconnected through events, inheritance, object interactions, and custom systems. Copy-pasting fragments of code into a browser chat quickly becomes inefficient once a project reaches a certain scale.
-
-GML Assistant attempts to solve that problem by acting as a dedicated workspace companion rather than a generic AI frontend. The goal is not to replace development knowledge, but to reduce the friction involved in maintaining large GML codebases, implementing repetitive systems, debugging complex interactions, and accelerating technical workflows that normally consume significant development time.
-
----
-
-# Philosophy
-
-This application was not designed around the concept of “vibe coding” or autonomous game generation. It is important to understand this before using the tool because the quality of the results depends heavily on how it is approached. The assistant works best when the developer already understands the structure of the game they are building and uses the AI as an accelerator instead of a replacement for technical reasoning.
-
-The intended workflow is collaborative. The developer defines architecture, mechanics, gameplay rules, system boundaries, and technical goals while the AI assists with implementation, iteration, refactoring, debugging, boilerplate generation, and analysis. In practice, this means the application is most useful for people who already actively work with GML and want to reduce the amount of time spent on repetitive or mentally exhausting tasks.
-
-The assistant is particularly effective when dealing with long debugging sessions, obscure edge cases, large scripts, shader experimentation, AI systems, movement logic, collision problems, save systems, inventory structures, dialogue frameworks, procedural systems, and general refactoring. It is not intended to magically produce complete games from vague prompts, and attempting to use it that way usually leads to poor project structure and difficult maintenance later on.
-
-The philosophy behind the project is simple: AI should enhance engineering workflows, not replace engineering discipline.
+## 📖 Table of Contents
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Local & Cloud AI Support](#local--cloud-ai-support)
+- [Installation & Setup](#installation--setup)
+- [Recommended Workflow](#recommended-workflow)
+- [Disclaimer](#disclaimer)
+- [Contributing: I Need Your Help!](#contributing-i-need-your-help)
+- [License](#license)
 
 ---
 
-# Core Functionality
+## 🔍 Overview
 
-The application integrates directly with GameMaker Studio 2 projects and attempts to operate with awareness of the workspace instead of isolated prompts. Once a `.yyp` project is opened, the assistant scans the project structure, identifies relevant scripts and objects, and retrieves contextual information dynamically depending on the request being made.
+**GML Assistant** is an open-source desktop application created specifically for GameMaker Studio 2 developers working with medium to large `.yyp` projects. 
 
-This allows the AI to reason using far more relevant information than traditional copy-paste workflows. Instead of manually feeding dozens of files into a chat window, the retrieval system attempts to assemble the most relevant project context automatically while respecting token limitations. The result is significantly more useful responses when dealing with interconnected gameplay systems or large codebases.
+Instead of behaving like a generic browser chatbot disconnected from your code, this application acts as a **workspace companion**. It understands your project structure, retrieves relevant files, analyzes relationships between scripts and objects, and provides context-aware assistance focused on actual engineering tasks.
 
-One of the most important aspects of the workflow is the diff review system. Rather than blindly injecting generated code into files, the application presents modifications through a dedicated comparison viewer that exposes the previous version, the generated version, and the reasoning behind the changes. This makes it possible to inspect and validate modifications before applying them to the project. Backup `.bak` files are also created automatically to reduce the risk of destructive edits.
+Copy-pasting fragments of code into a web chat quickly becomes inefficient as a project scales. GML Assistant solves this by reducing the friction involved in maintaining large GML codebases, debugging complex interactions, and accelerating boilerplate generation.
 
-The application additionally includes a sanitizer for invisible unicode artifacts generated by LLMs. Certain models occasionally produce hidden characters such as zero-width spaces or malformed formatting symbols that silently break GML compilation. The sanitizer scans the project and removes these artifacts automatically, preventing frustrating debugging situations that are otherwise difficult to identify manually.
-
----
-
-# Local AI Support
-
-A major focus of the project is local inference support. The application integrates with `llama.cpp` and `node-llama-cpp` in order to run GGUF models directly on the user's hardware. This allows the entire workflow to function offline without relying on external services or subscriptions.
-
-Running models locally provides several advantages. Privacy-sensitive projects never need to leave the machine, development remains possible without internet access, and experimentation becomes unrestricted because there are no API costs associated with long sessions or repeated iterations. This is particularly useful for developers who spend large amounts of time debugging or testing architectural variations.
-
-The application supports multiple model families including Qwen, Llama, DeepSeek, Mistral, Phi, and Gemma variants depending on hardware limitations and project requirements. The included model management workflow allows users to download, organize, and load GGUF models directly inside the application.
+<!-- TODO: Inserir uma screenshot geral da UI aqui -->
+<!-- ![GML Assistant UI](docs/screenshot_main.png) -->
 
 ---
 
-# Turbo Quantization and VRAM Optimization
+## ✨ Key Features
 
-One of the more technically important features of the project is its support for KV cache quantization and VRAM optimization strategies. Large codebases require large context windows, but large contexts quickly become expensive in terms of memory usage. Consumer GPUs frequently become a bottleneck when attempting to run coding models locally with extended contexts.
+* 🕸️ **Visual Relationship Workspace:** Automatically maps your project's architecture into a node-based "solar system" graph. Instantly see which scripts call which functions, where `global` variables are shared, and how shaders are linked.
+* 🧠 **Smart Context Retrieval (RAG):** You don't need to manually paste dozens of files. The AI automatically weights and fetches the most relevant scripts and dependencies based on what you are currently editing.
+* ⚖️ **Diff Review System:** Rather than blindly injecting generated code, modifications are presented in a dedicated comparison viewer. Inspect the old code, the AI's proposal, and the reasoning behind it before applying.
+* 🔄 **Auto-Registration:** When the AI creates a new script, object, or shader, it automatically registers the asset into your `.yyp` file. GameMaker will detect the new item instantly without drag-and-drop.
+* 🛡️ **AI Artifact Sanitizer:** LLMs sometimes produce hidden characters (zero-width spaces) that silently break GML compilation. The app features a built-in scanner to sanitize your project automatically.
+* 💾 **Safe Execution:** Automatic `.bak` backups are created before any destructive edits are applied to your codebase.
 
-To address this, the application supports multiple KV cache quantization modes including `f16`, `q8_0`, and `q4_0`. These configurations allow users to balance inference quality, speed, and VRAM consumption depending on their hardware. In practice, this makes it possible to run much larger contexts on GPUs that otherwise would not be capable of handling them.
-
-The application also exposes dynamic GPU offloading controls, allowing users to determine how many layers are processed on GPU versus CPU. This is especially useful when attempting to maximize performance without exceeding VRAM limitations or destabilizing the system during inference.
-
-These optimizations are extremely important for GameMaker projects because large GML workspaces can easily exceed the context capacity that many local AI setups can comfortably process without aggressive memory optimization.
-
----
-
-# Cloud API Support
-
-Although local inference is a major focus, the application also supports cloud-based providers through OpenAI-compatible APIs. This includes providers such as OpenAI, Gemini, Groq, DeepSeek, and OpenRouter depending on the configuration used by the user.
-
-Cloud inference is useful for users who either lack powerful local hardware or simply want access to larger and more capable hosted reasoning models. The workflow remains mostly identical regardless of whether the assistant is using local inference or cloud inference, which allows developers to switch between environments depending on the task being performed.
-
-For example, some users may prefer local models for iterative debugging sessions while using cloud models for larger reasoning tasks or architecture discussions.
+<!-- TODO: Inserir um GIF do Diff Viewer ou do Grafo Visual -->
+<!-- ![Visual Workspace Demo](docs/graph_demo.gif) -->
 
 ---
 
-# Installation and Environment Setup
+## 🤖 Local & Cloud AI Support
 
-Because the application relies on Electron, Node.js, native bindings, and optional GPU acceleration, the environment setup process is more technical than a standard frontend application. Users should expect to install development dependencies and potentially compile native modules during installation.
+GML Assistant is built to be flexible, allowing you to choose between maximum privacy or maximum reasoning power.
 
-The recommended environment is Windows with Node.js v18 or newer installed alongside Git and Visual Studio Community configured with the “Desktop development with C++” workload enabled. This is necessary because `node-llama-cpp` compiles native binaries during installation.
+### Local Inference (Offline & Private)
+The application integrates with `llama.cpp` and `node-llama-cpp` to run **GGUF models** directly on your hardware.
+* **100% Offline:** Your privacy-sensitive projects never leave your machine.
+* **Zero Costs:** Unlimited prompting and experimentation.
+* **Optimized for VRAM:** Supports dynamic GPU offloading and KV cache quantization (`f16`, `q8_0`, `q4_0`), allowing you to run massive context windows even on consumer GPUs.
+* **Built-in Model Hub:** Download and manage models (Qwen, Llama, DeepSeek, Mistral) directly inside the app.
 
-For NVIDIA users, CUDA installation is highly recommended in order to achieve acceptable local inference performance. Installing the CUDA Toolkit and ensuring that GPU drivers are properly updated allows the application to compile GPU-accelerated inference backends automatically during dependency installation. Users can verify correct CUDA installation by checking whether `nvcc --version` returns valid version information inside a terminal.
+### Cloud API Support
+If you lack powerful local hardware or need access to frontier reasoning models, the app supports OpenAI-compatible APIs.
+* Supported providers include **OpenAI, Google Gemini, Groq, DeepSeek, and OpenRouter**.
+* Switch seamlessly between local iterative debugging and cloud-based architectural discussions.
 
-Once the environment is configured, the installation process is relatively straightforward.
+---
+
+## ⚙️ Installation & Setup
+
+Because the application relies on Electron, Node.js, and native bindings for GPU acceleration, the setup requires specific build tools.
+
+### Prerequisites (Windows Recommended)
+1. **Node.js:** v18 or newer.
+2. **Visual Studio Community:** Must be installed with the **“Desktop development with C++”** workload enabled (Required to compile `node-llama-cpp`).
+3. **NVIDIA Users (Optional but Highly Recommended):** Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) and ensure your drivers are updated. Verify by running `nvcc --version` in your terminal.
+
+### Build Instructions
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/yourusername/gml-assistant.git
 ```
 ```bash
+# 2. Navigate to the folder
 cd gml-assistant
 ```
 ```bash
+# 3. Install dependencies (This will compile native C++ bindings, which may take a few minutes)
 npm install
 ```
 ```bash
+# 4. Start the application
 npm run dev
 ```
 
-The first installation may take several minutes because native inference components and acceleration backends are compiled specifically for the local machine configuration.
+---
+
+## 🛠️ Recommended Workflow
+
+This tool is **not designed for "vibe coding"**. It will not magically produce a complete game from a vague prompt. Attempting to use it that way usually leads to poor project structure.
+
+**The intended workflow is collaborative:**
+1. **You** define the architecture, mechanics, rules, and system boundaries.
+2. **The AI** assists with implementation, iteration, refactoring, finding obscure edge cases, and boilerplate generation.
+3. **Review & Iterate:** Use the Diff Viewer to manually validate generated logic before integrating changes into production systems. 
+
+**Best Use Cases:** Long debugging sessions, shader experimentation, movement logic, save/inventory systems, dialogue frameworks, and general refactoring.
 
 ---
 
-# Recommended Workflow
+## ⚠️ Disclaimer
 
-The application should ideally be used alongside proper version control practices. While the assistant creates backup files before applying modifications, AI-generated code should never be treated as automatically trustworthy. Developers are strongly encouraged to use Git, create frequent commits, and manually validate generated logic before integrating changes into production systems.
+Let's be honest: **I am not a senior software engineer.** I built GML Assistant because I needed it for my own GameMaker projects, and it eventually evolved into something genuinely useful worth sharing. 
 
-The most effective workflow is iterative. Instead of asking the AI to generate entire games or complete systems in a single prompt, developers should progressively refine systems while continuously validating architecture and behavior. In practice, this produces significantly more stable and maintainable results than attempting fully autonomous generation workflows.
+Because of this, the codebase is a reflection of a solo developer figuring things out as they go. There are certainly areas that can be optimized, refactored, or rewritten entirely.
 
-The assistant becomes dramatically more useful when paired with developers who already understand GML architecture, debugging fundamentals, and software structure. It is best viewed as a productivity multiplier rather than a replacement for technical knowledge.
-
----
-
-# Open Source Nature
-
-This project is fully open source and primarily developed as a personal hobby project rather than a commercial product. The goal is simply to build a genuinely useful engineering tool for GameMaker developers while experimenting with AI-assisted workflows and local inference technologies.
-
-The codebase is not perfect, bugs will exist, and architectural decisions may evolve over time as the project changes. Contributions, pull requests, issue reports, optimization improvements, and general feedback are highly encouraged from anyone interested in Electron applications, inference systems, AI tooling, or GameMaker development workflows.
-
-Because the project is community-oriented and experimental by nature, users should approach it with realistic expectations and understand that stability may vary depending on hardware configuration, inference backend, or project complexity.
+**Use the software at your own risk.** Always maintain proper version control (Git) before allowing any automated system to modify your project files. AI systems can produce incorrect logic, hallucinated APIs, or destructive edits. The assistant should be treated as a development aid, not an infallible authority.
 
 ---
 
-# Disclaimer
+## 🤝 Contributing: I Need Your Help!
 
-I am not a professional software engineer. This project was created primarily as a personal tool to improve my own GameMaker workflows and later evolved into something worth sharing publicly. While I actively use the application myself, there are certainly areas that can be improved, optimized, or rewritten entirely.
+Because this is a 100% free, passion-driven, and open-source project, **I highly encourage developers with more experience to jump in and help.** 
 
-Use the software at your own risk. Always maintain backups and proper version control before allowing any automated system to modify production project files. AI systems are capable of producing incorrect logic, destructive edits, hallucinated APIs, or unstable implementations regardless of how advanced the underlying model may appear.
+If you are a seasoned engineer looking for a cool open-source project to contribute to, your expertise is extremely welcome here. I am totally open to PRs that refactor bad code, improve performance, or rethink architectural decisions.
 
-The assistant should be treated as a development aid, not an infallible authority.
+**Areas where help is highly appreciated:**
+* ⚛️ **React & Electron Devs:** Improving UI rendering performance (especially the Visual Graph), state management, and component refactoring.
+* 🧠 **AI / RAG Enthusiasts:** Tweaking the context retrieval math, optimizing token budgets, and improving prompt engineering for local models.
+* 🎮 **GameMaker Experts:** Better parsing of `.yyp` files, handling edge cases in GML syntax, and improving the Auto-Registration features.
+* 🐛 **General Bug Fixing:** Finding and fixing edge cases that break the app or the Diff Viewer.
 
----
-
-# Contributing
-
-Community contributions are welcome and appreciated. Developers interested in React, Electron, Node.js, inference optimization, prompt engineering, retrieval systems, or GameMaker tooling are encouraged to contribute if they find the project interesting or useful.
-
-Bug reports, pull requests, architectural suggestions, performance improvements, and feature ideas all help improve the project over time. The long-term goal is to build a genuinely useful AI-assisted workspace tailored specifically toward GameMaker development instead of generic coding workflows that only partially translate into the realities of GML projects.
+Don't be shy! Whether it's a massive architecture overhaul, a performance tweak, or just fixing a typo, feel free to open an **Issue** or a **Pull Request**. Let's build the ultimate GameMaker AI companion together.
 
 ---
 
-# License
+## 📄 License
 
-This project is distributed under the MIT License. You are free to use, modify, distribute, and adapt the software according to the terms of the license.
+This project is distributed under the **MIT License**. You are free to use, modify, distribute, and adapt the software according to the terms of the license.
+
