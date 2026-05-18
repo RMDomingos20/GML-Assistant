@@ -5,7 +5,7 @@ import DiffViewer from './DiffViewer'
 import TitleBar from './TitleBar'
 import { 
   C, estimateTokens, formatTokens, ONLINE_PROVIDERS, parseGMLFilename, 
-  SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, INFERENCE_PARAMS
+  SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, INFERENCE_PARAMS, CATEGORY_ICONS, getCategory, applyTheme
 } from './constants'
 import { soundManager } from './soundManager'
 import VisualWorkspace from './VisualWorkspace'
@@ -120,6 +120,20 @@ const MessageRenderer = ({ content, isStreaming }) => {
 }
 
 const cursorStyle = { display: 'inline-block', width: 6, height: 12, background: C.accent, marginLeft: 5, verticalAlign: 'middle' }
+const _minifyCache = new Map() // path -> { rawHash, minified }
+
+const minifyGMLCached = (code, cacheKey) => {
+  const hash = code.length + '_' + code.slice(0, 64) // hash barato
+  const cached = _minifyCache.get(cacheKey)
+  if (cached && cached.rawHash === hash) return cached.minified
+  const minified = code
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*/g, '')
+    .replace(/^\s*[\r\n]/gm, '')
+    .trim()
+  _minifyCache.set(cacheKey, { rawHash: hash, minified })
+  return minified
+}
 
 export default function App() {
   const [appSettings, setAppSettings] = useState(null)
@@ -195,6 +209,7 @@ export default function App() {
 
   useEffect(() => {
     window.electron.getSettings().then(s => {
+      applyTheme(s.activeTheme || 'gml_modern', s.customTheme);
       setAppSettings(s)
       setIsLoadingSettings(false)
 
@@ -302,15 +317,36 @@ export default function App() {
     if (model && model.isNative) {
       setAiStatus("loading")
       try {
+        // Deriva typeK e typeV a partir do kvCacheType configurado.
+        // Keys precisam de mais precisão (usadas em produto interno para atenção).
+        // Values aceitam mais compressão (apenas multiplicadas pelos pesos).
+        const KV_MAP = {
+          'f16':  { k: 'f16',  v: 'q8_0' },
+          'q8_0': { k: 'q8_0', v: 'q4_0' },
+          'q4_0': { k: 'q4_0', v: 'q4_0' },
+          'q4_1': { k: 'q4_1', v: 'q4_0' },
+          'q5_0': { k: 'q5_0', v: 'q4_0' },
+          'q5_1': { k: 'q5_1', v: 'q4_0' },
+        }
+        const kvSetting = currentSettings.kvCacheType ?? 'q8_0'
+        const { k: kvTypeK, v: kvTypeV } = KV_MAP[kvSetting] ?? { k: kvSetting, v: kvSetting }
+
         const result = await window.electron.startNativeModel({
           modelPath: model.localPath,
           contextSize: currentSettings.contextSize,
           gpuLayers: currentSettings.gpuLayers === 999 ? 'auto' : currentSettings.gpuLayers,
-          kvCacheType: currentSettings.kvCacheType ?? 'f16'
+          kvCacheTypeK: kvTypeK,
+          kvCacheTypeV: kvTypeV,
         })
         if (result.warning) {
           console.warn(result.warning)
           setChatHistory(prev => [...prev, { role: 'system_msg', content: `⚠️ ${result.warning}` }])
+        }
+        if (result.actualKvTypeK) {
+          const kvInfo = result.actualKvTypeK === result.actualKvTypeV
+            ? result.actualKvTypeK
+            : `K=${result.actualKvTypeK} / V=${result.actualKvTypeV}`
+          setChatHistory(prev => [...prev, { role: 'system_msg', content: `🗜️ KV Cache ativo: ${kvInfo}` }])
         }
         if (!result.ok) throw new Error(result.error)
         setAiStatus("ready")
@@ -340,6 +376,7 @@ export default function App() {
   }
 
   const handleSettingsSave = (newSettings) => {
+    applyTheme(newSettings.activeTheme, newSettings.customTheme);
     setAppSettings(newSettings)
     soundManager.setVolume(newSettings.audioVolume ?? 1.0)
     if (newSettings.aiMode === 'online') {
@@ -849,7 +886,14 @@ export default function App() {
     
     // 2. Cálculo de Orçamento de Memória (Contexto)
     const contextSizeLimit = appSettings?.contextSize || (isLocalMode ? 4096 : 32768)
-    const tokensBudget = Math.floor(contextSizeLimit * (isLocalMode ? 0.50 : 0.75))
+    const SYSTEM_PROMPT_TOKEN_ESTIMATE = isLocalMode ? 650 : 1200 // margem conservadora
+    const RESPONSE_RESERVE = appSettings?.maxTokens ?? 2048
+    const tokensBudget = Math.max(
+      256,
+      Math.floor(contextSizeLimit * (isLocalMode ? 0.50 : 0.75))
+        - SYSTEM_PROMPT_TOKEN_ESTIMATE
+        - RESPONSE_RESERVE
+    )
   
     // 3. Sistema de Pontuação de Relevância (RAG Local)
     const allEntries = Object.entries(files)
@@ -914,16 +958,19 @@ export default function App() {
   
       // Preenche o contexto até atingir o limite de tokens
       let usedTokens = 0
+      const maxTokensPerFile = Math.floor(tokensBudget * 0.40)
       for (const entry of sorted) {
-        if (usedTokens + entry.tokens > tokensBudget) break
-        relevantFiles.push(entry)
-        usedTokens += entry.tokens
+        if (usedTokens >= tokensBudget) break
+        const cappedTokens = Math.min(entry.tokens, maxTokensPerFile)
+        if (usedTokens + cappedTokens > tokensBudget && relevantFiles.length > 0) continue
+        relevantFiles.push({ ...entry, tokens: cappedTokens })
+        usedTokens += cappedTokens
       }
       
       sentFilesCount = relevantFiles.length
       if (relevantFiles.length > 0) {
         repoContext = `ARQUIVOS RELEVANTES (Use estes arquivos como base):\n\n` + 
-          relevantFiles.map(e => `--- FILE: ${e.path} ---\n${minifyGML(e.content)}\n`).join('\n')
+          relevantFiles.map(e => `--- FILE: ${e.path} ---\n${minifyGMLCached(e.content, e.path)}\n`).join('\n')
       }
     }
   
@@ -937,7 +984,7 @@ export default function App() {
     // 5. Execução da Inferência (Local ou Online)
     try {
       let rawResponseText = ""
-      
+      let tokenHandler = null
       if (isLocalMode) {
         // --- MODO LOCAL ---
         let writingSoundStarted = false
@@ -947,9 +994,10 @@ export default function App() {
             if (!writingSoundStarted && chunk) { soundManager.startWritingSound(); writingSoundStarted = true }
             rawResponseText += chunk
             setStreamingText(hideStreamingCode(rawResponseText))
+            
           } else { soundManager.stopWritingSound() }
         }
-
+        
         window.electron.on('llm-token', tokenHandler)
         const response = await window.electron.chatNativeModelStream({
           systemPrompt: activeSystemPrompt,
@@ -1030,8 +1078,8 @@ export default function App() {
       setStreamingText("")
       setChatHistory(prev => [...prev, { role: 'error', content: `Erro na IA: ${e.message}` }])
     } finally {
-      window.electron.off('llm-token'); 
-      window.electron.off('online-llm-token'); 
+      window.electron.off('llm-token', tokenHandler)
+      window.electron.off('online-llm-token', tokenHandler)
       soundManager.stopWritingSound()
       setIsProcessing(false)
       if (textareaRef.current) textareaRef.current.focus()
@@ -1061,7 +1109,11 @@ export default function App() {
   if (isLoadingSettings) {
     return (
       <div style={{ background: C.bg, height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: C.text }}>
-        <div style={{ fontSize: 90, marginBottom: 20, animation: 'pulse 2s infinite ease-in-out' }}>🎮</div>
+        <img 
+          src="./Icon-GML.png" 
+          alt="GML Assistant" 
+          style={{ width: 90, height: 90, marginBottom: 20, animation: 'pulse 2s infinite ease-in-out' }} 
+        />
         <h1 style={{ color: C.accent, marginBottom: 10, fontWeight: 'bold' }}>GML Assistant</h1>
         <p style={{ color: C.textMuted, fontSize: 14 }}>Iniciando o cérebro da operação...</p>
         
@@ -1198,27 +1250,32 @@ export default function App() {
           {/* Ícone de arquivo quando colapsado */}
           {leftCollapsed && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 6, overflowY: 'auto' }}>
-              {Object.keys(files).slice(0, 20).map(path => (
-                <div
-                  key={path}
-                  onClick={() => { openFileTab(path); setLeftCollapsed(false) }}
-                  title={parseGMLFilename(path)}
-                  style={{
-                    width: 30, height: 30, borderRadius: 6,
-                    background: activeTab?.path === path ? C.border : C.surface,
-                    border: `1px solid ${activeTab?.path === path ? C.accent : C.border}`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 13, cursor: 'pointer',
-                    flexShrink: 0,
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
-                  onMouseLeave={e => e.currentTarget.style.borderColor = activeTab?.path === path ? C.accent : C.border}
-                >
-                  📄
-                </div>
-              ))}
+              {Object.keys(files).slice(0, 20).map(path => {
+                const cat = getCategory(path)
+                const icon = CATEGORY_ICONS[cat] || '📄'
+                
+                return (
+                  <div
+                    key={path}
+                    onClick={() => { openFileTab(path); setLeftCollapsed(false) }}
+                    title={parseGMLFilename(path)}
+                    style={{
+                      width: 30, height: 30, borderRadius: 6,
+                      background: activeTab?.path === path ? C.border : C.surface,
+                      border: `1px solid ${activeTab?.path === path ? C.accent : C.border}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = activeTab?.path === path ? C.accent : C.border}
+                  >
+                    {icon}
+                  </div>
+                )
+              })}
             </div>
-          )}
+          )}  
         </aside>
 
         {/* --- PAINEL CENTRAL: WORKSPACE --- */}
@@ -1753,7 +1810,10 @@ function SetupWizard({ onComplete }) {
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, width: 600, padding: 40, display: 'flex', flexDirection: 'column', gap: 20 }}>
         
         <div style={{ textAlign: 'center', marginBottom: 10 }}>
-          <h1 style={{ fontSize: 24, color: C.accent, marginBottom: 10 }}>Bem-vindo ao GML Assistant 🎮</h1>
+          <h1 style={{ fontSize: 24, color: C.accent, marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+            Bem-vindo ao GML Assistant
+            <img src="./Icon-GML.png" alt="Logo" style={{ width: 28, height: 28 }} />
+          </h1>
           <p style={{ color: C.textMuted, fontSize: 14 }}>Como você deseja processar a Inteligência Artificial?</p>
         </div>
 

@@ -11,7 +11,7 @@
 //  - Peso de cada nó visível no rodapé do card
 // ============================================================
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { C, parseGMLFilename } from './constants'
+import { C, parseGMLFilename, CATEGORY_ICONS, getCategory } from './constants'
 import { buildRelationships, REL_COLORS, REL_TYPES } from './relationshipAnalyzer'
 
 // ── Layout Padrão ───────────────────────────────────────────
@@ -19,22 +19,10 @@ const GRID_SIZE      = 26
 const DEFAULT_NODE_W = 400
 const DEFAULT_NODE_H = 240
 
-// ── Ícones por categoria de asset ───────────────────────────
-const CATEGORY_ICONS = {
-  objects:    '🎮', scripts:    '📜', rooms:      '🏠',
-  fonts:      '🔤', sounds:     '🔊', sprites:    '🖼️',
-  shaders:    '⚡', notes:      '📝', sequences:  '🎞️',
-  timelines:  '⏱️', paths:      '〰️', extensions: '🔌',
-}
-
 // ── Helpers de path ─────────────────────────────────────────
 function getGroupKey(filePath) {
   const parts = filePath.replace(/\\/g, '/').split('/')
   return parts.length >= 2 ? parts[parts.length - 2] : parts[0]
-}
-
-function getCategory(filePath) {
-  return filePath.replace(/\\/g, '/').split('/')[0] || 'scripts'
 }
 
 function getEventLabel(filePath) {
@@ -248,11 +236,12 @@ function ObjectNode({
         display: 'flex', flexDirection: 'column',
         zIndex: isDragging ? 100 : isSelected ? 50 : 1,
         filter: isDragging
-          ? 'drop-shadow(0 14px 40px rgba(0,0,0,0.8))'
+          ? '0 14px 40px rgba(0,0,0,0.8)'
           : isSelected
-            ? `drop-shadow(0 0 14px ${C.accent}55)`
-            : 'drop-shadow(0 4px 18px rgba(0,0,0,0.5))',
+            ? `0 0 14px ${C.accent}55`
+            : '0 4px 18px rgba(0,0,0,0.4)',
         transition: isDragging ? 'none' : 'filter 0.2s',
+        borderRadius: 10,
       }}
     >
       {hasDiff && (
@@ -421,27 +410,9 @@ function ObjectNode({
   )
 }
 
-// ── Overlay SVG de relacionamentos ───────────────────────────
-// Renderiza as linhas FORA da camada de pan/zoom para não distorcer
-// — as coordenadas são calculadas em espaço de tela (getBoundingClientRect).
-function RelationshipOverlay({ links, positions, sizes, zoom, pan, selectedNode, canvasRef }) {
-  const [lines, setLines] = useState([])
-
-  useEffect(() => {
-    if (!canvasRef.current) return
-
-    const canvasRect = canvasRef.current.getBoundingClientRect()
-
-    // Converte posição de nó (espaço world) para espaço de tela
-    const worldToScreen = (pos, size) => {
-      const w = size?.w || DEFAULT_NODE_W
-      const h = size?.h || DEFAULT_NODE_H
-      return {
-        cx: pan.x + (pos.x + w / 2) * zoom,
-        cy: pan.y + (pos.y + h / 2) * zoom,
-      }
-    }
-
+// ── Overlay SVG de relacionamentos (Otimizado via Hardware) ──────────
+function RelationshipOverlay({ links, positions, sizes, selectedNode }) {
+  const lines = useMemo(() => {
     const newLines = []
     const relevantLinks = selectedNode
       ? links.filter(l => l.from === selectedNode || l.to === selectedNode)
@@ -452,29 +423,38 @@ function RelationshipOverlay({ links, positions, sizes, zoom, pan, selectedNode,
       const posTo   = positions[link.to]
       if (!posFrom || !posTo) return
 
-      const a = worldToScreen(posFrom, sizes[link.from])
-      const b = worldToScreen(posTo,   sizes[link.to])
+      const wFrom = sizes[link.from]?.w || DEFAULT_NODE_W
+      const hFrom = sizes[link.from]?.h || DEFAULT_NODE_H
+      const wTo   = sizes[link.to]?.w || DEFAULT_NODE_W
+      const hTo   = sizes[link.to]?.h || DEFAULT_NODE_H
 
-      newLines.push({ ...link, x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy })
+      // Calcula puramente usando as coordenadas do mundo
+      newLines.push({ 
+        ...link, 
+        x1: posFrom.x + wFrom / 2, 
+        y1: posFrom.y + hFrom / 2, 
+        x2: posTo.x + wTo / 2, 
+        y2: posTo.y + hTo / 2 
+      })
     })
-
-    setLines(newLines)
-  }, [links, positions, sizes, zoom, pan, selectedNode])
+    return newLines
+  }, [links, positions, sizes, selectedNode])
 
   if (lines.length === 0) return null
 
   return (
     <svg
       style={{
-        position: 'absolute', inset: 0, width: '100%', height: '100%',
-        pointerEvents: 'none', zIndex: 200,
+        position: 'absolute', top: 0, left: 0, 
+        width: 1, height: 1, overflow: 'visible',
+        pointerEvents: 'none', 
+        zIndex: 999, // MUDADO: Fica na frente de todas as guias e cartões
       }}
     >
       <defs>
         {Object.entries(REL_COLORS).map(([type, color]) => (
           <marker
-            key={type}
-            id={`arrow-${type}`}
+            key={type} id={`arrow-${type}`}
             viewBox="0 0 10 10" refX="8" refY="5"
             markerWidth="6" markerHeight="6" orient="auto-start-reverse"
           >
@@ -498,20 +478,13 @@ function RelationshipOverlay({ links, positions, sizes, zoom, pan, selectedNode,
           <g key={i} opacity={opacity}>
             <path
               d={`M${line.x1},${line.y1} Q${mx},${my} ${line.x2},${line.y2}`}
-              fill="none"
-              stroke={color}
-              strokeWidth="1.5"
-              strokeDasharray="6 3"
+              fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="6 3"
               markerEnd={`url(#arrow-${line.type})`}
             />
             {isHighlighted && (
               <text
-                x={(line.x1 + line.x2) / 2}
-                y={my - 6}
-                textAnchor="middle"
-                fill={color}
-                fontSize="10"
-                fontFamily="monospace"
+                x={(line.x1 + line.x2) / 2} y={my - 6}
+                textAnchor="middle" fill={color} fontSize="10" fontFamily="monospace"
               >
                 {line.label}
               </text>
@@ -738,6 +711,18 @@ export default function VisualWorkspace({ tabs, allFiles, onAccept, onReject, on
     })
   }, [])
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Registra o evento manualmente dizendo que ele NÃO é passivo
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+    };
+  }, [handleWheel]);
+
   // ── 1. Função Inteligente de Enquadramento ──
   const recenterView = useCallback(() => {
     if (entries.length === 0) {
@@ -871,24 +856,11 @@ export default function VisualWorkspace({ tabs, allFiles, onAccept, onReject, on
         ref={canvasRef}
         style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden', background: C.bg, cursor: isPanning ? 'grabbing' : 'default' }}
         onMouseDown={handleBgDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
         data-canvas="true"
       >
         <GridBackground pan={pan} zoom={zoom} />
 
-        {/* Overlay SVG de relacionamentos (fora da camada de zoom) */}
-        {showRelationships && links.length > 0 && (
-          <RelationshipOverlay
-            links={links}
-            positions={positions}
-            sizes={sizes}
-            zoom={zoom}
-            pan={pan}
-            selectedNode={selectedNode}
-            canvasRef={canvasRef}
-          />
-        )}
-
+        {/* MENSAGEM VAZIO FICA AQUI */}
         {entries.length === 0 && (
           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: C.textMuted, textAlign: 'center', pointerEvents: 'none' }}>
             <div style={{ fontSize: 52, marginBottom: 16, opacity: 0.25 }}>🎮</div>
@@ -897,16 +869,20 @@ export default function VisualWorkspace({ tabs, allFiles, onAccept, onReject, on
           </div>
         )}
 
-        {/* Camada que aplica o Pan e o Zoom */}
+        {/* Camada Acelerada por Hardware que aplica o Pan e o Zoom */}
         <div
           data-canvas="true"
           style={{
             position: 'absolute', top: 0, left: 0,
             transformOrigin: '0 0',
-            transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})`
+            /* MUDADO: Math.round evita desfoque de pixel fracionado */
+            transform: `translate(${Math.round(pan.x)}px, ${Math.round(pan.y)}px) scale(${zoom})`,
+            /* MUDADO: Removido will-change para o navegador renderizar texto em vetor (nítido) ao invés de imagem rasterizada */
           }}
         >
-          {entries.map(([groupKey, { category, events }]) => {
+          
+          {/* CARTÕES RENDERIZADOS PRIMEIRO */}
+          {entries.map(([groupKey, { category, events }]) =>{
             const pos      = positions[groupKey] || { x: 0, y: 0 }
             const size     = sizes[groupKey] || { w: DEFAULT_NODE_W, h: DEFAULT_NODE_H }
             const evPath   = activeEvent[groupKey] || Object.keys(events)[0]
@@ -929,6 +905,17 @@ export default function VisualWorkspace({ tabs, allFiles, onAccept, onReject, on
               />
             )
           })}
+
+          {/* MUDADO: LINHAS RENDERIZADAS POR ÚLTIMO (Garante que fiquem por cima no contexto de empilhamento do DOM) */}
+          {showRelationships && links.length > 0 && (
+            <RelationshipOverlay
+              links={links}
+              positions={positions}
+              sizes={sizes}
+              selectedNode={selectedNode}
+            />
+          )}
+
         </div>
 
         {/* UI Flutuante: Controles de Zoom */}

@@ -1,33 +1,98 @@
 // ============================================================================
-// CONSTANTES GLOBAIS — GML Assistant
+// CONSTANTES GLOBAIS E TEMAS — GML Assistant
 // ============================================================================
 
-export const C = {
-  bg:         '#07090E',
-  surface:    '#0D1018',
-  elevated:   '#131722',
-  border:     '#1A2035',
-  borderHover:'#253050',
-  accent:     '#E8832A',
-  accentDim:  '#E8832A22',
-  teal:       '#1FC8A4',
-  tealDim:    '#1FC8A41A',
-  text:       '#E2E8F8',
-  textMuted:  '#5A6A8A',
-  textDim:    '#8A9CC0',
-  danger:     '#E84A5A',
-  dangerDim:  '#E84A5A1A',
-  success:    '#22C55E',
-  successDim: '#22C55E1A',
-  warning:    '#F59E0B',
-  warningDim: '#F59E0B1A',
-  code:       '#0A0D14',
-  purple:     '#9B8AFF',
-  purpleDim:  '#9B8AFF1A',
-  blue:       '#4A9EFF',
-  blueDim:    '#4A9EFF1A',
+export const THEMES = {
+  gml_modern: {
+    name: "GML Modern (Padrão da Logo)",
+    colors: {
+      bg:         '#0D1117', // Fundo escuro tecnológico
+      surface:    '#161B22',
+      elevated:   '#21262D',
+      border:     '#30363D',
+      borderHover:'#484F58',
+      accent:     '#00FFA3', // Verde claro neon da logo
+      accentDim:  '#00FFA31A',
+      teal:       '#00D4B2', // Secundário da logo
+      tealDim:    '#00D4B21A',
+      text:       '#E6EDF3',
+      textMuted:  '#8B949E',
+      textDim:    '#A5B0BB',
+      danger:     '#FF6060',
+      dangerDim:  '#FF60601A',
+      success:    '#2EE07F',
+      successDim:  '#2EE07F1A',
+      warning:    '#E3B341',
+      warningDim: '#E3B3411A',
+      code:       '#0A0D12',
+      purple:     '#A371F7',
+      purpleDim:  '#A371F71A',
+      blue:       '#58A6FF',
+      blueDim:    '#58A6FF1A',
+    }
+  },
+  gamemaker: {
+    name: "GameMaker Studio 2",
+    colors: {
+      bg:         '#1C1E26',
+      surface:    '#23252E',
+      elevated:   '#2A2C37',
+      border:     '#3E4050',
+      borderHover:'#5A5D70',
+      accent:     '#22B573',
+      accentDim:  '#22B57322',
+      teal:       '#1FC8A4',
+      tealDim:    '#1FC8A422',
+      text:       '#E2E8F8',
+      textMuted:  '#7A8499',
+      textDim:    '#A0AABF',
+      danger:     '#E84A5A',
+      dangerDim:  '#E84A5A22',
+      success:    '#22B573',
+      successDim: '#22B57322',
+      warning:    '#F5A623',
+      warningDim: '#F5A62322',
+      code:       '#15171D',
+      purple:     '#9B8AFF',
+      purpleDim:  '#9B8AFF22',
+      blue:       '#4A9EFF',
+      blueDim:    '#4A9EFF22',
+    }
+  },
+  classic: {
+    name: "Classic Dark (Legado)",
+    colors: {
+      bg: '#07090E', surface: '#0D1018', elevated: '#131722', border: '#1A2035', borderHover: '#253050',
+      accent: '#E8832A', accentDim: '#E8832A22', teal: '#1FC8A4', tealDim: '#1FC8A41A',
+      text: '#E2E8F8', textMuted: '#5A6A8A', textDim: '#8A9CC0', danger: '#E84A5A', dangerDim: '#E84A5A1A',
+      success: '#22C55E', successDim: '#22C55E1A', warning: '#F59E0B', warningDim: '#F59E0B1A',
+      code: '#0A0D14', purple: '#9B8AFF', purpleDim: '#9B8AFF1A', blue: '#4A9EFF', blueDim: '#4A9EFF1A',
+    }
+  }
 }
 
+// O objeto C agora é mutável
+export const C = { ...THEMES.gml_modern.colors }
+
+// Função injetora de tema
+export const applyTheme = (themeId, customColors = null) => {
+  let targetColors = THEMES[themeId] ? THEMES[themeId].colors : THEMES.gml_modern.colors;
+  
+  if (themeId === 'custom' && customColors) {
+    targetColors = { ...THEMES.gml_modern.colors, ...customColors };
+    
+    // Auto-gera as versões "Dim" (transparente) para o tema customizado
+    const dimmable = ['accent', 'teal', 'danger', 'success', 'warning', 'purple', 'blue'];
+    dimmable.forEach(k => {
+      if (targetColors[k]) targetColors[k + 'Dim'] = targetColors[k] + '22'; // Adiciona 13% opacity em Hex
+    });
+  }
+
+  // Muta o objeto C original. O próximo render do React atualizará toda a interface!
+  for (const key in targetColors) {
+    C[key] = targetColors[key];
+  }
+}
 export const estimateTokens = (text = '') => Math.ceil(text.length / 3)
 
 export const formatBytes = (bytes) => {
@@ -55,6 +120,7 @@ REGRAS OBRIGATÓRIAS DE COMPORTAMENTO:
 5. Para EXCLUIR um arquivo, use <delete>.
 6. Coloque as tags XML APENAS NO FINAL da resposta. Nenhuma palavra após o último fechamento de tag.
 7. Para COPIAR, RENOMEAR ou MOVER, use a tag <copy>.
+8. PROIBIDO: Nunca use duas ou mais tags para o mesmo caminho de arquivo. Cada arquivo deve ter EXATAMENTE UMA ação — ou <change>, ou <file>, ou <delete>, ou <copy>. Jamais combine ações para o mesmo path.
 
 ⚠️ PROTOCOLO ANTI-ALUCINAÇÃO (O MAIS IMPORTANTE) ⚠️
 8. NÃO CONFIE NA SUA MEMÓRIA! Antes de escrever um bloco <search>, VOCÊ DEVE OBRIGATORIAMENTE ler a seção "ARQUIVOS RELEVANTES" que eu te enviei.
@@ -230,4 +296,18 @@ export const parseGMLFilename = (filePath) => {
     return `${parent} › ${base}`
   }
   return parent ? `${parent} › ${base}` : base
+}
+
+// ============================================================================
+// ÍCONES DE CATEGORIA
+// ============================================================================
+export const CATEGORY_ICONS = {
+  objects:    '🎮', scripts:    '📜', rooms:      '🏠',
+  fonts:      '🔤', sounds:     '🔊', sprites:    '🖼️',
+  shaders:    '⚡', notes:      '📝', sequences:  '🎞️',
+  timelines:  '⏱️', paths:      '〰️', extensions: '🔌',
+}
+
+export const getCategory = (filePath) => {
+  return (filePath || '').replace(/\\/g, '/').split('/')[0] || 'scripts'
 }

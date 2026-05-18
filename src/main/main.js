@@ -36,7 +36,9 @@ function getSettings() {
     aiMode: null,
     onlineBaseUrl: 'https://api.openai.com/v1',
     onlineModel: 'gpt-4o-mini',
-    onlineKey: ''
+    onlineKey: '',
+    activeTheme: 'gml_modern',
+    customTheme: {}
   }
   try {
     if (fs.existsSync(settingsPath)) {
@@ -71,10 +73,13 @@ function isPathSafe(basePath, targetPath) {
 
 // [PATCH DE SEGURANÇA] Apenas domínios confiáveis para download de modelos
 const TRUSTED_DOWNLOAD_DOMAINS = [
-  'huggingface.co',
-  'cdn-lfs.huggingface.co',
-  'cdn-lfs-us-1.huggingface.co',
-  'localhost',
+  'huggingface.co', // Domínio principal do HuggingFace, onde muitos modelos e LFS estão hospedados
+  'cdn-lfs.huggingface.co', // CDN principal dos LFS do HuggingFace
+  'cdn-lfs-us-1.huggingface.co', // CDN secundária dos LFS do HuggingFace, usada para balanceamento de carga
+  'hf.co', // Domínio curto usado na CDN atual do HuggingFace
+  'amazonaws.com', // AWS S3 onde alguns LFS estão armazenados
+  'cloudfront.net', // Cloudfront CDN
+  'localhost', // para testes locais
   '127.0.0.1',
 ]
 
@@ -97,7 +102,7 @@ function createWindow() {
       contextIsolation: true, nodeIntegration: false,
       autoplayPolicy: 'no-user-gesture-required'
     },
-    icon: path.join(__dirname, '../../assets/icon.png').replace(/\\/g, '/'),
+    icon: path.join(__dirname, '../../public/Icon-GML.png').replace(/\\/g, '/'),
   })
 
   if (isDev) mainWindow.loadURL('http://localhost:5173')
@@ -436,38 +441,36 @@ ipcMain.handle('read-project-folder', async (_, folderPath) => {
     'sequences', 'notes', 'extensions', 'datafiles'
   ]
 
-  const walk = (dir) => {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true })
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name)
-        const rel  = path.relative(folderPath, full).replace(/\\/g, '/')
+  const walk = async (dir) => {
+    let entries
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }) }
+    catch { return }
 
-        if (entry.isDirectory()) {
-          if (!ignoredDirs.includes(entry.name)) walk(full)
-        } else {
-          if (/\.(gml|fsh|vsh|md|txt)$/.test(entry.name)) {
-            if (!rel.includes('CreationCode') && !rel.includes('RoomCreationCode')) {
-              try {
-                const raw     = fs.readFileSync(full, 'utf-8')
-                const content = sanitizeContent(raw)
-                // [BUG FIX] Inclui arquivos mesmo vazios para que a IA saiba que existem.
-                // Arquivos completamente sem conteúdo são representados como string vazia.
-                files[rel] = content
-              } catch {}
-            }
+    await Promise.all(entries.map(async (entry) => {
+      const full = path.join(dir, entry.name)
+      const rel  = path.relative(folderPath, full).replace(/\\/g, '/')
+
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.includes(entry.name)) await walk(full)
+      } else {
+        if (/\.(gml|fsh|vsh|md|txt)$/.test(entry.name)) {
+          if (!rel.includes('CreationCode') && !rel.includes('RoomCreationCode')) {
+            try {
+              const raw     = await fs.promises.readFile(full, 'utf-8')
+              const content = sanitizeContent(raw)
+              files[rel] = content
+            } catch {}
           }
         }
       }
-    } catch {}
+    }))
   }
-  walk(folderPath)
+
+  await walk(folderPath)
   return files
 })
 
 // ─── SALVAR / CRIAR ARQUIVO ──────────────────────────────────────────────────
-// [BUG FIX] Chama autoRegisterNewAsset para registrar novos assets no .yyp
-// [PATCH DE SEGURANÇA] Valida path traversal antes de qualquer operação de disco
 ipcMain.handle('save-file', async (_, { folderPath, relativePath, content }) => {
   try {
     // [SEGURANÇA] Rejeita paths que tentam escapar da pasta do projeto
@@ -504,7 +507,15 @@ ipcMain.handle('save-file', async (_, { folderPath, relativePath, content }) => 
         return { ok: true, isNew: true, autoRegistered: false }
       }
     }
-
+    // Limpa .bak com mais de 7 dias para não acumular lixo
+    try {
+      const bakPath = fullPath + '.bak'
+      if (fs.existsSync(bakPath)) {
+        const bakStat = fs.statSync(bakPath)
+        const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
+        if (Date.now() - bakStat.mtimeMs > sevenDaysMs) fs.unlinkSync(bakPath)
+      }
+    } catch {}
     return { ok: true, isNew: false }
   } catch (e) {
     return { ok: false, error: e.message }
@@ -773,7 +784,7 @@ async function createLlamaInstance() {
   throw new Error('Nenhum backend disponível (cuda/vulkan/cpu falharam).')
 }
 
-ipcMain.handle('start-native-model', async (_, { modelPath, contextSize, gpuLayers, kvCacheType }) => {
+ipcMain.handle('start-native-model', async (_, { modelPath, contextSize, gpuLayers, kvCacheTypeK, kvCacheTypeV }) => {
   try {
     nativeSession = null
     if (nativeContext) { try { await nativeContext.dispose() } catch {} nativeContext = null }
@@ -782,7 +793,9 @@ ipcMain.handle('start-native-model', async (_, { modelPath, contextSize, gpuLaye
     const llama        = await createLlamaInstance()
     const effectiveCtx = (contextSize && contextSize > 0) ? contextSize : 4096
 
-    const tryLoad = async (layers, useFA, typeKV) => {
+    // typeK e typeV podem ser diferentes: keys precisam de mais precisão (produto interno)
+    // values toleram mais compressão (só multiplicados por pesos de atenção)
+    const tryLoad = async (layers, useFA, tK, tV) => {
       let tempModel = null
       let tempCtx   = null
       try {
@@ -790,7 +803,7 @@ ipcMain.handle('start-native-model', async (_, { modelPath, contextSize, gpuLaye
         tempCtx   = await tempModel.createContext({
           contextSize: effectiveCtx, flashAttention: useFA,
           threads: Math.max(1, os.cpus().length - 1),
-          batchSize: 512, typeK: typeKV, typeV: typeKV
+          batchSize: 512, typeK: tK, typeV: tV
         })
         return { model: tempModel, ctx: tempCtx }
       } catch (e) {
@@ -801,27 +814,41 @@ ipcMain.handle('start-native-model', async (_, { modelPath, contextSize, gpuLaye
     }
 
     let result
-    let warning       = null
-    let fallbackKvType = kvCacheType || 'f16'
+    let warning = null
 
+    // Tipos efetivos: default q8_0 para K (mais preciso), q4_0 para V (mais comprimido)
+    let activeTypeK = kvCacheTypeK || 'q8_0'
+    let activeTypeV = kvCacheTypeV || 'q4_0'
+
+    // Cadeia de 4 tentativas — preserva a escolha do usuário o máximo possível
     try {
-      result = await tryLoad(gpuLayers, true, fallbackKvType)
+      // 1. Ideal: Flash Attention + tipos escolhidos pelo usuário
+      result = await tryLoad(gpuLayers, true, activeTypeK, activeTypeV)
     } catch (e1) {
       try {
-        fallbackKvType = 'f16'
-        result  = await tryLoad(gpuLayers, false, 'f16')
-        warning = 'Otimizações de KV Cache falharam ou não são compatíveis com sua placa. Carregando no modo padrão (F16).'
+        // 2. Sem Flash Attention, mas ainda com os tipos escolhidos
+        result = await tryLoad(gpuLayers, false, activeTypeK, activeTypeV)
+        warning = `Flash Attention não suportada pela GPU. Carregando sem ela (KV Cache: K=${activeTypeK} / V=${activeTypeV}).`
       } catch (e2) {
-        result  = await tryLoad(0, false, 'f16')
-        warning = 'Sem memória de Vídeo (VRAM) suficiente ou GPU incompatível. O modelo foi carregado usando apenas o Processador (CPU). Ficará mais lento.'
+        try {
+          // 3. Sem FA + fallback para f16 (sem compressão, mas estável)
+          activeTypeK = 'f16'
+          activeTypeV = 'f16'
+          result  = await tryLoad(gpuLayers, false, 'f16', 'f16')
+          warning = 'KV Cache comprimido não suportado pela GPU. Carregando no modo padrão (F16).'
+        } catch (e3) {
+          // 4. Último recurso: apenas CPU
+          result  = await tryLoad(0, false, 'f16', 'f16')
+          warning = 'Sem VRAM suficiente ou GPU incompatível. Modelo carregado usando apenas CPU. Ficará mais lento.'
+        }
       }
     }
 
     nativeModel   = result.model
     nativeContext = result.ctx
-    lastContextParams = { effectiveCtx, typeKV: fallbackKvType }
+    lastContextParams = { effectiveCtx, typeK: activeTypeK, typeV: activeTypeV }
 
-    return { ok: true, contextSize: nativeContext.contextSize, warning }
+    return { ok: true, contextSize: nativeContext.contextSize, warning, actualKvTypeK: activeTypeK, actualKvTypeV: activeTypeV }
   } catch (err) {
     return { ok: false, error: err.message }
   }
@@ -846,8 +873,8 @@ ipcMain.handle('abort-native-generation', async () => {
           flashAttention: false,
           threads: Math.max(1, os.cpus().length - 1),
           batchSize: 512,
-          typeK: lastContextParams.typeKV,
-          typeV: lastContextParams.typeKV,
+          typeK: lastContextParams.typeK || 'q8_0',
+          typeV: lastContextParams.typeV || 'q4_0',
         })
       } catch (e) { nativeContext = null }
     }
@@ -890,6 +917,24 @@ ipcMain.handle('chat-native-model-stream', async (_, { systemPrompt, userPrompt,
       })
     }
 
+    // Estimativa conservadora de tokens usados na sessão atual
+    // nativeContext.contextSize = tamanho total; getSequence não expõe uso diretamente
+    // então rastreamos manualmente via contador simples
+    if (!nativeSession._tq_tokenCount) nativeSession._tq_tokenCount = 0
+    nativeSession._tq_tokenCount += Math.ceil((safeUserPrompt.length + safeSystemPrompt.length) / 3.5)
+
+    const usageRatio = nativeSession._tq_tokenCount / lastContextParams.effectiveCtx  // Acessando o objeto global correto
+    if (usageRatio > 0.80 && nativeSession._tq_tokenCount > 1000) {
+      // Reseta a sessão proativamente antes de estourar, mantendo o system prompt
+      nativeSession = null
+      nativeSession = new LlamaChatSession({
+        contextSequence: nativeContext.getSequence(),
+        systemPrompt: safeSystemPrompt,
+      })
+      nativeSession._tq_tokenCount = Math.ceil((safeSystemPrompt.length) / 3.5)
+      mainWindow?.webContents.send('llm-token', { chunk: '[🔄 Sessão renovada automaticamente para liberar contexto]\n\n' })
+    }
+
     generationAbortController = new AbortController()
     const signal  = generationAbortController.signal
     let fullText  = ''
@@ -904,7 +949,7 @@ ipcMain.handle('chat-native-model-stream', async (_, { systemPrompt, userPrompt,
       topK:          40,
       topP:          0.90,
       minP:          0.05,
-      stopOn: ['User:', 'Human:', '\n\n\n\n\n', '```\n```', '</file>\n<file'],
+      stopOn: ['User:', 'Human:', '\n\n\n\n\n', '</file>\n<file'],
 
       onTextChunk: (chunk) => {
         if (forceStopNative || signal.aborted) throw new Error('FORCED_STOP')

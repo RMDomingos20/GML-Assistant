@@ -29,7 +29,13 @@ export default function TitleBar({ title, subtitle }) {
       WebkitAppRegion: 'drag', 
       userSelect: 'none',
     }}>
-      <div style={{ fontSize: 16, WebkitAppRegion: 'no-drag' }}>🎮</div>
+      <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', alignItems: 'center' }}>
+        <img 
+          src="./Icon-GML.png" 
+          alt="Logo" 
+          style={{ width: 18, height: 18, objectFit: 'contain', pointerEvents: 'none' }} 
+        />
+      </div>
       
       <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.text, lineHeight: 1 }}>
