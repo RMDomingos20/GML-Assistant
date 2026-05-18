@@ -31,12 +31,14 @@ Context-aware AI tooling focused on large GML projects, debugging, refactoring, 
 > **Philosophy:** AI should enhance engineering workflows, not replace engineering discipline. This is not an autonomous game generator; it is a collaborative technical accelerator.
 
 ## 📖 Table of Contents
-- [Overview](#-overview)
-- [Key Features](#-key-features)
-- [Local & Cloud AI Support](#-local--cloud-ai-support)
-- [Installation & Setup](#-installation--setup)
-- [Recommended Workflow](#-recommended-workflow)
-- [Disclaimer & Contributing](#-disclaimer--contributing)
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Local & Cloud AI Support](#local--cloud-ai-support)
+- [Installation & Setup](#installation--setup)
+- [Recommended Workflow](#recommended-workflow)
+- [Disclaimer](#disclaimer)
+- [Contributing: I Need Your Help!](#contributing-i-need-your-help)
+- [License](#license)
 
 ---
 
